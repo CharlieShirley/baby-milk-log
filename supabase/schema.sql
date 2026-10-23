@@ -1,7 +1,7 @@
 -- 寶寶奶量紀錄：Supabase 資料表與權限
 -- 在 Supabase 專案的 SQL Editor 整段貼上執行一次即可。
 
-create extension if not exists pgcrypto;
+create extension if not exists pgcrypto with schema extensions;
 
 -- 家庭：同一個家庭的成員共用所有紀錄
 create table if not exists public.families (
@@ -9,7 +9,7 @@ create table if not exists public.families (
   baby_name text not null default '寶寶',
   baby_birthday date,
   daily_goal_ml int not null default 600,
-  invite_code text not null unique default upper(substr(encode(gen_random_bytes(4), 'hex'), 1, 6)),
+  invite_code text not null unique default upper(substr(encode(extensions.gen_random_bytes(4), 'hex'), 1, 6)),
   created_at timestamptz not null default now()
 );
 
@@ -38,6 +38,8 @@ create table if not exists public.feedings (
 );
 
 create index if not exists feedings_family_time on public.feedings (family_id, fed_at desc);
+create index if not exists family_members_family on public.family_members (family_id);
+create index if not exists feedings_created_by on public.feedings (created_by);
 
 -- 目前登入者的家庭 id（security definer 避免 RLS 遞迴）
 create or replace function public.my_family_id()
@@ -108,6 +110,7 @@ as $$
   delete from public.family_members where user_id = auth.uid()
 $$;
 
+revoke execute on function public.my_family_id(), public.create_family(text, text), public.join_family(text, text), public.leave_family() from public, anon;
 grant execute on function public.my_family_id() to authenticated;
 grant execute on function public.create_family(text, text) to authenticated;
 grant execute on function public.join_family(text, text) to authenticated;
@@ -115,7 +118,7 @@ grant execute on function public.leave_family() to authenticated;
 
 -- 自動更新 updated_at
 create or replace function public.touch_updated_at()
-returns trigger language plpgsql as $$
+returns trigger language plpgsql set search_path = public as $$
 begin
   new.updated_at = now();
   return new;
