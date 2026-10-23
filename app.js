@@ -72,14 +72,23 @@
   }
   function errText(e) {
     const m = (e && (e.message || e.error_description)) || String(e);
-    if (/Invalid login credentials/i.test(m)) return 'Email 或密碼不正確';
-    if (/Email not confirmed/i.test(m)) return '請先到信箱點確認連結，再回來登入';
-    if (/User already registered/i.test(m)) return '這個 Email 已經註冊過了，請直接登入';
+    if (/Invalid login credentials/i.test(m)) return '帳號名稱或密碼不正確';
+    if (/Email not confirmed/i.test(m)) return '帳號還沒啟用，請確認 Supabase 已關閉 Confirm email';
+    if (/User already registered/i.test(m)) return '這個帳號名稱已經有人用了，請直接登入或換一個';
     if (/Password should be at least/i.test(m)) return '密碼至少要 6 個字';
     if (/invalid invite code/i.test(m)) return '找不到這個邀請碼，請再確認一次';
     if (/already in a family/i.test(m)) return '你已經在一個家庭裡了';
     if (/Failed to fetch|NetworkError/i.test(m)) return '網路連線有問題，請稍後再試';
     return m;
+  }
+  // 不用信箱登入：把帳號名稱轉成內部用的假 Email（英數字不分大小寫，其他文字轉成 16 進位）
+  function usernameToEmail(name) {
+    const n = name.trim().normalize('NFC');
+    if (!n) return null;
+    const local = /^[a-z0-9._-]+$/i.test(n) && !/^[.]|[.]$|[.]{2}/.test(n)
+      ? n.toLowerCase()
+      : 'u' + Array.from(new TextEncoder().encode(n), (b) => b.toString(16).padStart(2, '0')).join('');
+    return local.length <= 64 ? `${local}@users.babymilk.app` : null;
   }
   function lsGet(k, fallback) { try { const v = localStorage.getItem(k); return v == null ? fallback : JSON.parse(v); } catch { return fallback; } }
   function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 無痕模式等 */ } }
@@ -163,20 +172,23 @@
         </div>
         ${msg ? `<p class="err">${esc(msg)}</p>` : ''}
         <form id="auth-form">
-          <div class="field"><label>Email</label>
-            <input class="input" type="email" name="email" autocomplete="email" required></div>
+          <div class="field"><label>帳號名稱</label>
+            <input class="input" name="username" autocomplete="username" autocapitalize="none" autocorrect="off"
+              maxlength="20" placeholder="例如：mama 或 小湯圓媽媽" required></div>
           <div class="field"><label>密碼</label>
             <input class="input" type="password" name="password" minlength="6"
               autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}" required></div>
           <button class="btn" type="submit">${mode === 'login' ? '登入' : '建立帳號'}</button>
         </form>
-        ${mode === 'signup' ? '<p class="hint">註冊後請到信箱點確認連結，再回來登入</p>' : ''}
+        ${mode === 'signup' ? '<p class="hint">不需要信箱。請記好帳號名稱和密碼，換手機時用同一組登入</p>' : ''}
       </div>`;
     $app.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => renderAuth(b.dataset.mode)));
     $app.querySelector('#auth-form').addEventListener('submit', async (ev) => {
       ev.preventDefault();
       const f = new FormData(ev.target);
-      const email = f.get('email').trim();
+      const username = f.get('username').trim();
+      const email = usernameToEmail(username);
+      if (!email) { renderAuth(mode, '帳號名稱太長了，請短一點'); return; }
       const password = f.get('password');
       const btn = ev.target.querySelector('button');
       btn.disabled = true;
@@ -185,11 +197,9 @@
           const { error } = await sb.auth.signInWithPassword({ email, password });
           if (error) throw error;
         } else {
-          const { data, error } = await sb.auth.signUp({
-            email, password, options: { emailRedirectTo: location.origin + location.pathname },
-          });
+          const { data, error } = await sb.auth.signUp({ email, password, options: { data: { username } } });
           if (error) throw error;
-          if (!data.session) { renderAuth('login'); toast('已寄出確認信，請到信箱點連結 💌'); }
+          if (!data.session) renderAuth('login', '帳號建立了，但還不能登入：請確認 Supabase 已關閉 Confirm email');
         }
       } catch (e) {
         renderAuth(mode, errText(e));
@@ -595,7 +605,7 @@
         <div class="card-title">👨‍👩‍👧 家庭成員</div>
         <ul class="members">${state.members.map((m) => `<li><span class="m">🧸</span>${esc(m.display_name)}${m.user_id === me.id ? '（我）' : ''}</li>`).join('')}</ul>
       </div>
-      <p class="hint">登入帳號：${esc(me.email)}</p>
+      <p class="hint">登入帳號：${esc((me.user_metadata && me.user_metadata.username) || me.email)}</p>
       <button class="btn ghost" id="s-logout">登出</button>
       <button class="btn danger" id="s-leave">離開這個家庭</button>
     `, () => {

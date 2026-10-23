@@ -8,6 +8,7 @@
 - 今日總奶量與目標進度圈、距離上次喝奶多久
 - 時間軸列出每一筆，點一下可修改或刪除，可切換前後天補記
 - 近 7 天奶量長條圖
+- 用帳號名稱＋密碼登入，不需要信箱
 - 家庭邀請碼：第一位家人建立家庭，其他人註冊後輸入邀請碼加入
 - 可「加入主畫面」，像 App 一樣全螢幕開啟
 
@@ -21,7 +22,7 @@
 
 1. 在 [Supabase](https://supabase.com) 建立一個新專案。
 2. 打開專案的 **SQL Editor**，把 `supabase/schema.sql` 整段貼上並執行。
-3. 到 **Authentication → URL Configuration**，把 Site URL 設成網站網址（例如 `https://charlieshirley.github.io/baby-milk-log/`），Redirect URLs 也加上同一個網址，註冊確認信的連結才會回到網站。
+3. 到 **Authentication → Sign In / Providers → Email**，關閉 **Confirm email**。網站用「帳號名稱＋密碼」登入，不寄任何信。
 4. 到 **Project Settings → API**，複製 Project URL 和 anon public key，填進 `config.js`。
 5. 推上 GitHub，在 repo 的 **Settings → Pages** 選 `main` 分支、根目錄。
 
