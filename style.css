@@ -443,3 +443,13 @@ textarea.input { height: 76px; padding: 10px 14px; resize: none; }
 .photo-view { position: fixed; inset: 0; z-index: 50; background: rgba(30, 20, 15, 0.92); display: grid; place-items: center; padding: 16px; }
 .photo-view img { max-width: 100%; max-height: 100%; border-radius: 12px; }
 .photo-view button { position: absolute; top: calc(env(safe-area-inset-top) + 12px); right: 12px; width: 44px; height: 44px; border-radius: 50%; background: rgba(255,255,255,0.9); font-size: 18px; font-weight: 800; }
+
+/* iPhone Safari 的日期／時間欄位：寬度和其他欄位一樣、文字靠左 */
+input.input[type=date], input.input[type=time], input.input[type=datetime-local] {
+  -webkit-appearance: none; appearance: none;
+  display: block; min-width: 0; max-width: 100%; width: 100%;
+  text-align: left; line-height: 46px; padding-top: 0; padding-bottom: 0;
+}
+input.input::-webkit-date-and-time-value { text-align: left; margin: 0; }
+input.input::-webkit-datetime-edit { padding: 0; }
+.trow input.input { flex: 1; width: auto; }
