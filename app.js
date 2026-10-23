@@ -95,19 +95,32 @@
 
   // ---------- 底部表單 ----------
 
+  const SHEET_TOP = '<div class="sheet-head"><div class="grip"></div><button type="button" class="sheet-close" aria-label="關閉">✕</button></div>';
+
+  function setSheetHtml(html) {
+    $sheet.innerHTML = SHEET_TOP + html;
+    $sheet.querySelector('.sheet-close').addEventListener('click', closeSheet);
+  }
   function openSheet(html, onMount) {
-    $sheet.innerHTML = `<div class="grip"></div>${html}`;
+    setSheetHtml(html);
     $sheet.hidden = false;
     $backdrop.hidden = false;
     document.body.style.overflow = 'hidden';
+    // 讓手機的「返回」也能關閉表單，而不是離開網站
+    if (!(history.state && history.state.sheet)) history.pushState({ sheet: true }, '');
     if (onMount) onMount($sheet);
   }
-  function closeSheet() {
+  function hideSheet() {
     $sheet.hidden = true;
     $backdrop.hidden = true;
     $sheet.innerHTML = '';
     document.body.style.overflow = '';
   }
+  function closeSheet() {
+    if (history.state && history.state.sheet) history.back();
+    else hideSheet();
+  }
+  window.addEventListener('popstate', () => { if (!$sheet.hidden) hideSheet(); });
   $backdrop.addEventListener('click', closeSheet);
 
   // ---------- 啟動 ----------
@@ -518,7 +531,7 @@
 
     function rerender() {
       const top = $sheet.scrollTop;
-      $sheet.innerHTML = `<div class="grip"></div>${html()}`;
+      setSheetHtml(html());
       mount();
       $sheet.scrollTop = top;
     }
@@ -606,6 +619,7 @@
         <ul class="members">${state.members.map((m) => `<li><span class="m">🧸</span>${esc(m.display_name)}${m.user_id === me.id ? '（我）' : ''}</li>`).join('')}</ul>
       </div>
       <p class="hint">登入帳號：${esc((me.user_metadata && me.user_metadata.username) || me.email)}</p>
+      <button class="btn" id="s-back">回到首頁</button>
       <button class="btn ghost" id="s-logout">登出</button>
       <button class="btn danger" id="s-leave">離開這個家庭</button>
     `, () => {
@@ -637,6 +651,7 @@
           else { await navigator.clipboard.writeText(text); toast('已複製邀請訊息'); }
         } catch { /* 使用者取消分享 */ }
       });
+      $sheet.querySelector('#s-back').addEventListener('click', closeSheet);
       $sheet.querySelector('#s-logout').addEventListener('click', async () => { closeSheet(); await sb.auth.signOut(); });
       $sheet.querySelector('#s-leave').addEventListener('click', async () => {
         if (!confirm('離開後就看不到這個家庭的紀錄了，確定嗎？')) return;
