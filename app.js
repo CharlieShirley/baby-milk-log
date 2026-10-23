@@ -474,8 +474,9 @@
 
       <nav class="daynav">
         <button id="prev" aria-label="前一天">‹</button>
-        <div class="label">${isToday ? '今天' : `${d.getMonth() + 1} 月 ${d.getDate()} 日`}
-          <small>${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}（${WEEKDAYS[d.getDay()]}）</small></div>
+        <label class="label pick">${isToday ? '今天' : `${d.getMonth() + 1} 月 ${d.getDate()} 日`} <span class="cal">📅</span>
+          <small>${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}（${WEEKDAYS[d.getDay()]}）・點我選日期</small>
+          <input type="date" id="pick-day" value="${dayKey(d)}" max="${dayKey(new Date())}" aria-label="選擇日期"></label>
         <button id="next" aria-label="後一天" ${isToday ? 'disabled' : ''}>›</button>
       </nav>
 
@@ -505,7 +506,7 @@
       </section>
 
       <section class="card">
-        <div class="card-title">📊 近 7 天奶量<span class="sub">平均 ${weekAvg} ml / 天</span></div>
+        <div class="card-title">📊 近 7 天奶量<button class="link-btn" id="month-view">📅 月份總覽 ›</button></div>
         <div class="chart">
           <div class="goal" style="bottom:${(goal / maxMl) * 100 * 0.72 + 14}%"><span>目標 ${goal}</span></div>
           ${week.map((w) => `
@@ -515,6 +516,7 @@
               <div class="d">${sameDay(w.d, new Date()) ? '今' : WEEKDAYS[w.d.getDay()]}</div>
             </div>`).join('')}
         </div>
+        <p class="hint" style="margin:8px 0 0">平均 ${weekAvg} ml / 天</p>
       </section>
 
       <div class="fab-row">
@@ -527,6 +529,15 @@
 
     $app.querySelector('#prev').addEventListener('click', () => { state.day = addDays(state.day, -1); loadData(); });
     $app.querySelector('#next').addEventListener('click', () => { if (!isToday) { state.day = addDays(state.day, 1); loadData(); } });
+    const pick = $app.querySelector('#pick-day');
+    pick.addEventListener('click', (ev) => { try { pick.showPicker(); ev.preventDefault(); } catch { /* 舊瀏覽器用原生行為 */ } });
+    pick.addEventListener('change', () => {
+      if (!pick.value) return;
+      const nd = new Date(pick.value + 'T00:00:00');
+      state.day = nd > new Date() ? startOfDay(new Date()) : nd;
+      loadData();
+    });
+    $app.querySelector('#month-view').addEventListener('click', () => openMonth(state.day));
     $app.querySelectorAll('.fab').forEach((b) => b.addEventListener('click', () => openFeeding({ kind: b.dataset.kind })));
     $app.querySelectorAll('[data-id]').forEach((el) => el.addEventListener('click', () => {
       const r = state.rows.find((x) => x.id === el.dataset.id);
@@ -534,6 +545,73 @@
     }));
     $app.querySelectorAll('.bar').forEach((el) => el.addEventListener('click', () => {
       state.day = new Date(Number(el.dataset.day)); loadData();
+    }));
+  }
+
+  // ---------- 月份總覽 ----------
+
+  async function openMonth(anyDay) {
+    const first = new Date(anyDay.getFullYear(), anyDay.getMonth(), 1);
+    const next = new Date(first.getFullYear(), first.getMonth() + 1, 1);
+    const now = new Date();
+    const isThisMonth = first.getFullYear() === now.getFullYear() && first.getMonth() === now.getMonth();
+    const goal = state.family.daily_goal_ml || 600;
+
+    const head = `<h2>${first.getFullYear()} 年 ${first.getMonth() + 1} 月</h2>`;
+    if ($sheet.hidden) openSheet(`${head}<div class="empty"><span class="e">🍼</span>載入中…</div>`);
+    else setSheetHtml(`${head}<div class="empty"><span class="e">🍼</span>載入中…</div>`);
+
+    const { data, error } = await sb.from('feedings').select('fed_at, kind, amount_ml, left_min, right_min')
+      .eq('family_id', state.family.id).gte('fed_at', first.toISOString()).lt('fed_at', next.toISOString());
+    if ($sheet.hidden) return;
+    if (error) { setSheetHtml(`${head}<p class="err">${esc(errText(error))}</p>`); return; }
+
+    const byDay = {};
+    for (const r of data || []) {
+      const k = dayKey(new Date(r.fed_at));
+      (byDay[k] = byDay[k] || []).push(r);
+    }
+    const daysInMonth = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+    const cells = [];
+    for (let i = 0; i < first.getDay(); i += 1) cells.push('<div class="mc blank"></div>');
+    let sum = 0; let daysWith = 0; let best = null;
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const dt = new Date(first.getFullYear(), first.getMonth(), day);
+      const k = dayKey(dt);
+      const rows = byDay[k] || [];
+      const t = totals(rows);
+      const future = dt > now;
+      if (rows.length) { daysWith += 1; sum += t.ml; if (!best || t.ml > best.ml) best = { day, ml: t.ml }; }
+      const lvl = !rows.length ? 0 : t.ml >= goal ? 4 : t.ml >= goal * 0.75 ? 3 : t.ml >= goal * 0.5 ? 2 : 1;
+      cells.push(`<button type="button" class="mc l${lvl} ${sameDay(dt, now) ? 'today' : ''} ${sameDay(dt, state.day) ? 'sel' : ''}"
+        data-mday="${k}" ${future ? 'disabled' : ''}>
+        <span class="dn">${day}</span><span class="ml">${rows.length ? t.ml || '' : ''}</span>
+        ${t.breastCount ? '<span class="bf">🤱</span>' : ''}</button>`);
+    }
+    const avg = daysWith ? Math.round(sum / daysWith) : 0;
+
+    setSheetHtml(`
+      <div class="mnav">
+        <button type="button" id="m-prev" aria-label="上個月">‹</button>
+        ${head}
+        <button type="button" id="m-next" aria-label="下個月" ${isThisMonth ? 'disabled' : ''}>›</button>
+      </div>
+      <div class="mstats">
+        <div><b>${sum}</b><small>本月總量 ml</small></div>
+        <div><b>${avg}</b><small>平均 ml / 天</small></div>
+        <div><b>${best ? `${best.day} 日` : '－'}</b><small>喝最多${best ? `（${best.ml}）` : ''}</small></div>
+      </div>
+      <div class="mgrid">${WEEKDAYS.map((w) => `<div class="mw">${w}</div>`).join('')}${cells.join('')}</div>
+      <div class="mlegend"><span><i class="l1"></i>未達一半</span><span><i class="l2"></i>一半以上</span><span><i class="l3"></i>75% 以上</span><span><i class="l4"></i>達到目標 ${goal}</span></div>
+      <p class="hint">點一天就會跳到那天的紀錄；🤱 表示那天有親餵（親餵不計 ml）</p>
+      <button class="btn ghost" id="m-close">回到首頁</button>`);
+    $sheet.querySelector('#m-prev').addEventListener('click', () => openMonth(new Date(first.getFullYear(), first.getMonth() - 1, 1)));
+    $sheet.querySelector('#m-next').addEventListener('click', () => { if (!isThisMonth) openMonth(next); });
+    $sheet.querySelector('#m-close').addEventListener('click', closeSheet);
+    $sheet.querySelectorAll('[data-mday]').forEach((b) => b.addEventListener('click', () => {
+      state.day = new Date(b.dataset.mday + 'T00:00:00');
+      closeSheet();
+      loadData();
     }));
   }
 
