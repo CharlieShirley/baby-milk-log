@@ -271,6 +271,59 @@
     ]);
     state.family = fam;
     state.members = members || [];
+    await refreshAvatarUrl();
+  }
+
+  // ---------- 寶寶頭像 ----------
+
+  const BABY_SVG = {
+    boy: `<svg viewBox="0 0 100 100" aria-hidden="true">
+      <circle cx="50" cy="56" r="34" fill="#FFE0C7"/>
+      <path d="M30 34c6-14 34-16 42-2-8-4-14-3-18 2-4-6-14-6-24 0z" fill="#8A5A3C"/>
+      <path d="M52 22c6-6 14-4 12 3-3-3-7-3-12-3z" fill="#8A5A3C"/>
+      <circle cx="38" cy="56" r="4" fill="#5B3F30"/><circle cx="62" cy="56" r="4" fill="#5B3F30"/>
+      <circle cx="31" cy="66" r="6" fill="#FFB59E" opacity=".7"/><circle cx="69" cy="66" r="6" fill="#FFB59E" opacity=".7"/>
+      <path d="M43 70q7 6 14 0" stroke="#5B3F30" stroke-width="3" fill="none" stroke-linecap="round"/>
+    </svg>`,
+    girl: `<svg viewBox="0 0 100 100" aria-hidden="true">
+      <circle cx="50" cy="56" r="34" fill="#FFE0C7"/>
+      <path d="M22 54c-2-22 14-34 28-34s30 12 28 34c-4-12-12-18-28-18S26 42 22 54z" fill="#8A5A3C"/>
+      <path d="M62 20l14-8v20zM62 20l-2 10 16 2" fill="#F58DA5"/><path d="M76 12l12 2-12 18z" fill="#F58DA5"/>
+      <circle cx="74" cy="22" r="5" fill="#E9819A"/>
+      <circle cx="38" cy="58" r="4" fill="#5B3F30"/><circle cx="62" cy="58" r="4" fill="#5B3F30"/>
+      <circle cx="31" cy="68" r="6" fill="#FFB59E" opacity=".75"/><circle cx="69" cy="68" r="6" fill="#FFB59E" opacity=".75"/>
+      <path d="M43 72q7 6 14 0" stroke="#5B3F30" stroke-width="3" fill="none" stroke-linecap="round"/>
+    </svg>`,
+  };
+
+  function avatarHtml(cls = 'avatar') {
+    const fam = state.family || {};
+    const g = fam.baby_gender === 'girl' ? 'girl' : 'boy';
+    if (state.avatarUrl) return `<div class="${cls} ${g}"><img src="${esc(state.avatarUrl)}" alt=""></div>`;
+    return `<div class="${cls} ${g}">${BABY_SVG[g]}</div>`;
+  }
+
+  async function refreshAvatarUrl() {
+    const path = state.family && state.family.avatar_path;
+    if (!path) { state.avatarUrl = null; state.avatarFor = null; return; }
+    if (state.avatarFor === path && state.avatarUrl) return;
+    const { data, error } = await sb.storage.from('avatars').createSignedUrl(path, 60 * 60 * 24 * 7);
+    state.avatarUrl = error ? null : data.signedUrl;
+    state.avatarFor = error ? null : path;
+  }
+
+  // 裁成正方形並縮小，避免手機照片太大
+  async function squareJpeg(file, size = 480) {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await new Promise((ok, fail) => {
+        const i = new Image(); i.onload = () => ok(i); i.onerror = () => fail(new Error('讀不到這張照片，請換一張試試')); i.src = url;
+      });
+      const side = Math.min(img.naturalWidth, img.naturalHeight);
+      const c = document.createElement('canvas'); c.width = c.height = size;
+      c.getContext('2d').drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, size, size);
+      return await new Promise((ok) => c.toBlob(ok, 'image/jpeg', 0.85));
+    } finally { URL.revokeObjectURL(url); }
   }
 
   async function loadData() {
@@ -350,7 +403,7 @@
 
     $app.innerHTML = `
       <header class="topbar">
-        <div class="avatar">👶</div>
+        ${avatarHtml()}
         <div>
           <h1>${esc(fam.baby_name)}</h1>
           <div class="age">${esc(babyAge(fam.baby_birthday) || '點右上角設定生日')}</div>
@@ -601,6 +654,21 @@
     openSheet(`
       <h2>設定</h2>
       <div class="card">
+        <div class="card-title">🎀 寶寶頭像</div>
+        <div class="avatar-edit">
+          ${avatarHtml('avatar big')}
+          <div class="avatar-actions">
+            <div class="seg two">
+              <button type="button" data-g="boy" class="${fam.baby_gender !== 'girl' ? 'on' : ''}">👦 小男生</button>
+              <button type="button" data-g="girl" class="${fam.baby_gender === 'girl' ? 'on' : ''}">👧 小女生</button>
+            </div>
+            <label class="btn ghost small" for="s-photo">📷 ${fam.avatar_path ? '換一張照片' : '上傳照片'}</label>
+            <input type="file" id="s-photo" accept="image/*" hidden>
+            ${fam.avatar_path ? '<button type="button" class="btn danger small" id="s-photo-del">移除照片</button>' : ''}
+          </div>
+        </div>
+      </div>
+      <div class="card">
         <div class="card-title">👶 寶寶資料</div>
         <div class="field"><label>名字</label><input class="input" id="s-name" value="${esc(fam.baby_name)}"></div>
         <div class="field"><label>生日</label><input class="input" type="date" id="s-bday" value="${esc(fam.baby_birthday || '')}"></div>
@@ -652,6 +720,61 @@
         } catch { /* 使用者取消分享 */ }
       });
       $sheet.querySelector('#s-back').addEventListener('click', closeSheet);
+      const refreshAvatarUi = () => {
+        // 只更新頭像區塊，保留其他欄位正在輸入的內容
+        const old = $sheet.querySelector('.avatar-edit');
+        const tmp = document.createElement('div');
+        tmp.innerHTML = `${avatarHtml('avatar big')}`;
+        old.replaceChild(tmp.firstElementChild, old.querySelector('.avatar'));
+        $sheet.querySelectorAll('[data-g]').forEach((x) => x.classList.toggle('on', x.dataset.g === (state.family.baby_gender === 'girl' ? 'girl' : 'boy')));
+        $sheet.querySelector('label[for="s-photo"]').textContent = `📷 ${state.family.avatar_path ? '換一張照片' : '上傳照片'}`;
+        let del = $sheet.querySelector('#s-photo-del');
+        if (state.family.avatar_path && !del) {
+          del = document.createElement('button');
+          del.type = 'button'; del.className = 'btn danger small'; del.id = 's-photo-del'; del.textContent = '移除照片';
+          del.addEventListener('click', removePhoto);
+          $sheet.querySelector('.avatar-actions').appendChild(del);
+        } else if (!state.family.avatar_path && del) del.remove();
+        renderMain();
+      };
+      $sheet.querySelectorAll('[data-g]').forEach((b) => b.addEventListener('click', async () => {
+        const { error } = await sb.from('families').update({ baby_gender: b.dataset.g }).eq('id', fam.id);
+        if (error) return toast(errText(error));
+        state.family.baby_gender = b.dataset.g;
+        refreshAvatarUi();
+      }));
+      $sheet.querySelector('#s-photo').addEventListener('change', async (ev) => {
+        const file = ev.target.files && ev.target.files[0];
+        ev.target.value = '';
+        if (!file) return;
+        toast('照片上傳中…');
+        try {
+          const blob = await squareJpeg(file);
+          const path = `${fam.id}/${Date.now()}.jpg`;
+          const up = await sb.storage.from('avatars').upload(path, blob, { contentType: 'image/jpeg' });
+          if (up.error) throw up.error;
+          const oldPath = state.family.avatar_path;
+          const { error } = await sb.from('families').update({ avatar_path: path }).eq('id', fam.id);
+          if (error) throw error;
+          if (oldPath) sb.storage.from('avatars').remove([oldPath]);
+          state.family.avatar_path = path;
+          await refreshAvatarUrl();
+          refreshAvatarUi();
+          toast('照片換好了 📸');
+        } catch (e) { toast(errText(e)); }
+      });
+      async function removePhoto() {
+        if (!confirm('要移除寶寶的照片嗎？')) return;
+        const oldPath = state.family.avatar_path;
+        const { error } = await sb.from('families').update({ avatar_path: null }).eq('id', fam.id);
+        if (error) return toast(errText(error));
+        if (oldPath) sb.storage.from('avatars').remove([oldPath]);
+        state.family.avatar_path = null;
+        await refreshAvatarUrl();
+        refreshAvatarUi();
+      }
+      const delBtn = $sheet.querySelector('#s-photo-del');
+      if (delBtn) delBtn.addEventListener('click', removePhoto);
       $sheet.querySelector('#s-logout').addEventListener('click', async () => { closeSheet(); await sb.auth.signOut(); });
       $sheet.querySelector('#s-leave').addEventListener('click', async () => {
         if (!confirm('離開後就看不到這個家庭的紀錄了，確定嗎？')) return;

@@ -180,3 +180,25 @@ begin
 exception when duplicate_object then null;
 end;
 $$;
+
+-- 寶寶頭像：小男生／小女生，或上傳照片（存在私有的 avatars bucket，只有同家庭看得到）
+alter table public.families
+  add column if not exists baby_gender text not null default 'boy' check (baby_gender in ('boy', 'girl')),
+  add column if not exists avatar_path text;
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('avatars', 'avatars', false, 2097152, array['image/jpeg', 'image/png', 'image/webp'])
+on conflict (id) do nothing;
+
+drop policy if exists "avatars family read" on storage.objects;
+create policy "avatars family read" on storage.objects for select to authenticated
+  using (bucket_id = 'avatars' and (storage.foldername(name))[1] = (select public.my_family_id())::text);
+drop policy if exists "avatars family insert" on storage.objects;
+create policy "avatars family insert" on storage.objects for insert to authenticated
+  with check (bucket_id = 'avatars' and (storage.foldername(name))[1] = (select public.my_family_id())::text);
+drop policy if exists "avatars family update" on storage.objects;
+create policy "avatars family update" on storage.objects for update to authenticated
+  using (bucket_id = 'avatars' and (storage.foldername(name))[1] = (select public.my_family_id())::text);
+drop policy if exists "avatars family delete" on storage.objects;
+create policy "avatars family delete" on storage.objects for delete to authenticated
+  using (bucket_id = 'avatars' and (storage.foldername(name))[1] = (select public.my_family_id())::text);
