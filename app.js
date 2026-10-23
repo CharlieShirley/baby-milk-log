@@ -26,6 +26,8 @@
     live: false,
     tab: lsGetEarly('tab', 'milk'),
     growth: [],
+    diapers: [],
+    lastDiaper: null,
   };
 
   function lsGetEarly(k, fallback) { try { const v = localStorage.getItem(k); return v == null ? fallback : JSON.parse(v); } catch { return fallback; } }
@@ -354,12 +356,16 @@
   async function loadData() {
     const from = addDays(state.day, -6);
     const to = addDays(state.day, 1);
-    const [rowsRes, lastRes, growthRes] = await Promise.all([
+    const [rowsRes, lastRes, growthRes, diaperRes, lastDiaperRes] = await Promise.all([
       sb.from('feedings').select('*').eq('family_id', state.family.id)
         .gte('fed_at', from.toISOString()).lt('fed_at', to.toISOString()).order('fed_at'),
       sb.from('feedings').select('fed_at, kind, amount_ml').eq('family_id', state.family.id)
         .order('fed_at', { ascending: false }).limit(1),
       sb.from('growth').select('*').eq('family_id', state.family.id).order('measured_on'),
+      sb.from('diapers').select('*').eq('family_id', state.family.id)
+        .gte('changed_at', from.toISOString()).lt('changed_at', to.toISOString()).order('changed_at'),
+      sb.from('diapers').select('changed_at, kind').eq('family_id', state.family.id)
+        .order('changed_at', { ascending: false }).limit(1),
     ]);
     if (rowsRes.error) {
       if (isNetworkError(rowsRes.error) && !state.rows.length) return renderOffline();
@@ -368,6 +374,8 @@
     state.rows = rowsRes.data || [];
     state.last = (lastRes.data || [])[0] || null;
     state.growth = growthRes.data || [];
+    state.diapers = diaperRes.data || [];
+    state.lastDiaper = (lastDiaperRes.data || [])[0] || null;
     renderMain();
   }
 
@@ -385,6 +393,8 @@
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'feedings' }, scheduleReload)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'growth', filter: `family_id=eq.${state.family.id}` }, scheduleReload)
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'growth' }, scheduleReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'diapers', filter: `family_id=eq.${state.family.id}` }, scheduleReload)
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'diapers' }, scheduleReload)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'families', filter: `id=eq.${state.family.id}` }, async () => { await loadFamily(); renderMain(); })
       .subscribe((status) => {
         state.live = status === 'SUBSCRIBED';
@@ -428,6 +438,7 @@
   function tabbarHtml() {
     return `<nav class="tabbar">
       <button data-tab="milk" class="${state.tab === 'milk' ? 'on' : ''}"><span class="e">🍼</span>喝奶</button>
+      <button data-tab="diaper" class="${state.tab === 'diaper' ? 'on' : ''}"><span class="e">🧷</span>尿布</button>
       <button data-tab="growth" class="${state.tab === 'growth' ? 'on' : ''}"><span class="e">📈</span>成長曲線</button>
     </nav>`;
   }
@@ -442,9 +453,37 @@
     }));
   }
 
+  function daynavHtml() {
+    const d = state.day;
+    const isToday = sameDay(d, new Date());
+    return `
+      <nav class="daynav">
+        <button id="prev" aria-label="前一天">‹</button>
+        <label class="label pick">${isToday ? '今天' : `${d.getMonth() + 1} 月 ${d.getDate()} 日`} <span class="cal">📅</span>
+          <small>${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}（${WEEKDAYS[d.getDay()]}）・點我選日期</small>
+          <input type="date" id="pick-day" value="${dayKey(d)}" max="${dayKey(new Date())}" aria-label="選擇日期"></label>
+        <button id="next" aria-label="後一天" ${isToday ? 'disabled' : ''}>›</button>
+      </nav>`;
+  }
+
+  function bindDaynav() {
+    const isToday = sameDay(state.day, new Date());
+    $app.querySelector('#prev').addEventListener('click', () => { state.day = addDays(state.day, -1); loadData(); });
+    $app.querySelector('#next').addEventListener('click', () => { if (!isToday) { state.day = addDays(state.day, 1); loadData(); } });
+    const pick = $app.querySelector('#pick-day');
+    pick.addEventListener('click', (ev) => { try { pick.showPicker(); ev.preventDefault(); } catch { /* 舊瀏覽器用原生行為 */ } });
+    pick.addEventListener('change', () => {
+      if (!pick.value) return;
+      const nd = new Date(pick.value + 'T00:00:00');
+      state.day = nd > new Date() ? startOfDay(new Date()) : nd;
+      loadData();
+    });
+  }
+
   function renderMain() {
     if (!state.family) return;
     if (state.tab === 'growth') return renderGrowth();
+    if (state.tab === 'diaper') return renderDiapers();
     const fam = state.family;
     const rows = dayRows(state.day);
     const t = totals(rows);
@@ -472,13 +511,7 @@
         <span class="live ${state.live ? '' : 'off'}" style="margin-left:auto">同步</span>
       </div>` : ''}
 
-      <nav class="daynav">
-        <button id="prev" aria-label="前一天">‹</button>
-        <label class="label pick">${isToday ? '今天' : `${d.getMonth() + 1} 月 ${d.getDate()} 日`} <span class="cal">📅</span>
-          <small>${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}（${WEEKDAYS[d.getDay()]}）・點我選日期</small>
-          <input type="date" id="pick-day" value="${dayKey(d)}" max="${dayKey(new Date())}" aria-label="選擇日期"></label>
-        <button id="next" aria-label="後一天" ${isToday ? 'disabled' : ''}>›</button>
-      </nav>
+      ${daynavHtml()}
 
       <section class="card">
         <div class="summary">
@@ -527,16 +560,7 @@
       ${tabbarHtml()}`;
     bindChrome();
 
-    $app.querySelector('#prev').addEventListener('click', () => { state.day = addDays(state.day, -1); loadData(); });
-    $app.querySelector('#next').addEventListener('click', () => { if (!isToday) { state.day = addDays(state.day, 1); loadData(); } });
-    const pick = $app.querySelector('#pick-day');
-    pick.addEventListener('click', (ev) => { try { pick.showPicker(); ev.preventDefault(); } catch { /* 舊瀏覽器用原生行為 */ } });
-    pick.addEventListener('change', () => {
-      if (!pick.value) return;
-      const nd = new Date(pick.value + 'T00:00:00');
-      state.day = nd > new Date() ? startOfDay(new Date()) : nd;
-      loadData();
-    });
+    bindDaynav();
     $app.querySelector('#month-view').addEventListener('click', () => openMonth(state.day));
     $app.querySelectorAll('.fab').forEach((b) => b.addEventListener('click', () => openFeeding({ kind: b.dataset.kind })));
     $app.querySelectorAll('[data-id]').forEach((el) => el.addEventListener('click', () => {
@@ -778,6 +802,181 @@
   function clampInt(x, lo, hi) {
     const n = Math.round(Number(x));
     return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : lo;
+  }
+
+  // ---------- 尿布 ----------
+
+  const DIAPER_KINDS = {
+    pee: { label: '尿尿', emoji: '💧' },
+    poop: { label: '大便', emoji: '💩' },
+    both: { label: '尿尿＋大便', emoji: '💧💩' },
+  };
+  // 顏色參考兒童健康手冊的嬰兒大便辨識卡
+  const POOP_COLORS = {
+    yellow: { label: '黃色', css: '#F2C94C' },
+    golden: { label: '金黃', css: '#D9A13B' },
+    green: { label: '綠色', css: '#7FA650' },
+    brown: { label: '褐色', css: '#9B6A43' },
+    pale: { label: '淡黃／灰白', css: '#EDE6C8', warn: '淡黃、灰白或白色的大便可能是膽道閉鎖的警訊，請對照兒童健康手冊的「嬰兒大便辨識卡」，並盡快帶寶寶給兒科醫師看。' },
+    red: { label: '帶血／紅色', css: '#C8504A', warn: '大便帶血或呈紅色，建議拍照記錄並諮詢兒科醫師。' },
+    black: { label: '黑色', css: '#3B302A', warn: '出生頭幾天的黑綠色胎便是正常的；如果之後還是黑色，建議諮詢兒科醫師。' },
+  };
+
+  function diaperCounts(rows) {
+    const c = { pee: 0, poop: 0, count: rows.length };
+    for (const r of rows) {
+      if (r.kind === 'pee' || r.kind === 'both') c.pee += 1;
+      if (r.kind === 'poop' || r.kind === 'both') c.poop += 1;
+    }
+    return c;
+  }
+  function diaperRows(d) {
+    const k = dayKey(d);
+    return state.diapers.filter((r) => dayKey(new Date(r.changed_at)) === k);
+  }
+
+  function renderDiapers() {
+    const rows = diaperRows(state.day);
+    const c = diaperCounts(rows);
+    const isToday = sameDay(state.day, new Date());
+    const since = state.lastDiaper ? duration(Date.now() - new Date(state.lastDiaper.changed_at)) : null;
+
+    const week = [];
+    for (let i = 6; i >= 0; i -= 1) {
+      const dd = addDays(state.day, -i);
+      week.push({ d: dd, ...diaperCounts(diaperRows(dd)) });
+    }
+    const maxC = Math.max(8, ...week.map((w) => Math.max(w.pee, w.poop))) * 1.15;
+    const warnRow = rows.find((r) => r.poop_color && POOP_COLORS[r.poop_color] && POOP_COLORS[r.poop_color].warn);
+
+    const list = rows.slice().reverse().map((r, i, arr) => {
+      const k = DIAPER_KINDS[r.kind];
+      const at = new Date(r.changed_at);
+      const col = r.poop_color && POOP_COLORS[r.poop_color];
+      const prev = arr[i + 1];
+      const meta = [r.created_by_name && `by ${r.created_by_name}`, r.note].filter(Boolean).join(' · ');
+      return `<li data-did="${r.id}" style="cursor:pointer">
+        <span class="time">${hhmm(at)}</span>
+        <span class="bubble ${r.kind === 'pee' ? 'k-formula' : 'dk-poop'}">${r.kind === 'both' ? '💩' : k.emoji}</span>
+        <span class="info"><div class="main">${k.label}${col ? ` <span class="pc" style="background:${col.css}"></span>${col.label}` : ''}</div>
+          ${meta ? `<div class="meta">${esc(meta)}</div>` : ''}</span>
+        <span class="gap">${prev ? `+${shortDuration(at - new Date(prev.changed_at))}` : ''}</span>
+      </li>`;
+    }).join('');
+
+    $app.innerHTML = `${headerHtml()}
+      ${since ? `<div class="card" style="display:flex;align-items:center;gap:10px;padding:12px 16px">
+        <span style="font-size:22px">🧷</span><span>距離上次換尿布 <b>${since}</b></span>
+        <span class="live ${state.live ? '' : 'off'}" style="margin-left:auto">同步</span></div>` : ''}
+      ${daynavHtml()}
+      <section class="card">
+        <div class="dsum">
+          <div class="dbox pee"><span class="e">💧</span><b>${c.pee}</b><small>尿尿次數</small></div>
+          <div class="dbox poop"><span class="e">💩</span><b>${c.poop}</b><small>大便次數</small></div>
+          <div class="dbox all"><span class="e">🧷</span><b>${c.count}</b><small>換尿布</small></div>
+        </div>
+        ${warnRow ? `<p class="gnote warn">${esc(POOP_COLORS[warnRow.poop_color].warn)}</p>` : ''}
+        ${isToday && c.pee < 6 && new Date().getHours() >= 20 ? '<p class="hint" style="margin:10px 0 0">滿月後的寶寶通常一天會有 6 片以上的濕尿布，可以多留意喝奶量喔。</p>' : ''}
+      </section>
+      <section class="card">
+        <div class="card-title">📝 尿布紀錄<span class="sub">點一下可以修改</span></div>
+        ${list ? `<ul class="timeline">${list}</ul>` : `<div class="empty"><span class="e">🧷</span>${isToday ? '今天還沒有紀錄' : '這天沒有紀錄'}</div>`}
+      </section>
+      <section class="card">
+        <div class="card-title">📊 近 7 天次數</div>
+        <div class="chart dchart">
+          ${week.map((w) => `
+            <div class="bar ${sameDay(w.d, new Date()) ? 'today' : ''}" data-day="${w.d.getTime()}">
+              <div class="pair">
+                <div class="col"><div class="v">${w.pee || ''}</div><div class="fill pee" style="height:${(w.pee / maxC) * 85}%"></div></div>
+                <div class="col"><div class="v">${w.poop || ''}</div><div class="fill poop" style="height:${(w.poop / maxC) * 85}%"></div></div>
+              </div>
+              <div class="d">${sameDay(w.d, new Date()) ? '今' : WEEKDAYS[w.d.getDay()]}</div>
+            </div>`).join('')}
+        </div>
+        <div class="glegend"><span><i style="background:#8CC3EA"></i>尿尿</span><span><i style="background:#D9A13B"></i>大便</span></div>
+      </section>
+      <div class="fab-row">
+        <button class="fab k-formula" data-dkind="pee"><span class="e">💧</span>尿尿</button>
+        <button class="fab dk-poop" data-dkind="poop"><span class="e">💩</span>大便</button>
+        <button class="fab dk-both" data-dkind="both"><span class="e">💧💩</span>都有</button>
+      </div>
+      ${tabbarHtml()}`;
+    bindChrome();
+    bindDaynav();
+    $app.querySelectorAll('[data-dkind]').forEach((b) => b.addEventListener('click', () => openDiaper({ kind: b.dataset.dkind })));
+    $app.querySelectorAll('[data-did]').forEach((el) => el.addEventListener('click', () => {
+      const r = state.diapers.find((x) => x.id === el.dataset.did);
+      if (r) openDiaper(r);
+    }));
+    $app.querySelectorAll('.bar').forEach((el) => el.addEventListener('click', () => {
+      state.day = new Date(Number(el.dataset.day)); loadData();
+    }));
+  }
+
+  function openDiaper(existing) {
+    const isEdit = !!existing.id;
+    const v = {
+      kind: existing.kind,
+      at: isEdit ? new Date(existing.changed_at) : defaultTime(),
+      color: isEdit ? existing.poop_color : lsGet('lastPoopColor', null),
+      note: isEdit ? existing.note || '' : '',
+    };
+    function html() {
+      const hasPoop = v.kind !== 'pee';
+      const warn = hasPoop && v.color && POOP_COLORS[v.color] && POOP_COLORS[v.color].warn;
+      return `
+        <h2>${isEdit ? '修改尿布紀錄' : '換尿布'}</h2>
+        <div class="field"><div class="seg">${Object.entries(DIAPER_KINDS).map(([k, kk]) =>
+          `<button type="button" data-dk="${k}" class="${v.kind === k ? 'on' : ''}"><span class="e">${kk.emoji}</span>${kk.label}</button>`).join('')}</div></div>
+        <div class="field"><label>時間</label>
+          <input class="input" type="datetime-local" id="d-time" value="${toLocalInput(v.at)}"></div>
+        ${hasPoop ? `<div class="field"><label>大便顏色（可不選）</label>
+          <div class="colors">${Object.entries(POOP_COLORS).map(([k, c]) =>
+            `<button type="button" class="cchip ${v.color === k ? 'on' : ''}" data-pc="${k}"><span class="pc" style="background:${c.css}"></span>${c.label}</button>`).join('')}</div>
+          ${warn ? `<p class="gnote warn">${esc(warn)}</p>` : ''}</div>` : ''}
+        <div class="field"><label>備註</label>
+          <textarea class="input" id="d-note" placeholder="例如：有點稀、紅屁屁…">${esc(v.note)}</textarea></div>
+        <button class="btn" id="d-save">${isEdit ? '儲存' : '記錄下來'}</button>
+        ${isEdit ? '<button class="btn danger" id="d-del">刪除這筆</button>' : ''}
+        <button class="btn ghost" id="d-cancel">取消</button>`;
+    }
+    function collect() {
+      const t = $sheet.querySelector('#d-time'); if (t && t.value) v.at = new Date(t.value);
+      const n = $sheet.querySelector('#d-note'); if (n) v.note = n.value;
+    }
+    function rerender() { const top = $sheet.scrollTop; setSheetHtml(html()); mount(); $sheet.scrollTop = top; }
+    function mount() {
+      $sheet.querySelectorAll('[data-dk]').forEach((b) => b.addEventListener('click', () => { collect(); v.kind = b.dataset.dk; rerender(); }));
+      $sheet.querySelectorAll('[data-pc]').forEach((b) => b.addEventListener('click', () => {
+        collect(); v.color = v.color === b.dataset.pc ? null : b.dataset.pc; rerender();
+      }));
+      $sheet.querySelector('#d-cancel').addEventListener('click', closeSheet);
+      $sheet.querySelector('#d-save').addEventListener('click', async (ev) => {
+        collect();
+        if (isNaN(v.at)) return toast('請選擇時間');
+        ev.target.disabled = true;
+        const color = v.kind === 'pee' ? null : v.color || null;
+        const payload = { kind: v.kind, changed_at: v.at.toISOString(), poop_color: color, note: v.note.trim() || null };
+        const res = isEdit
+          ? await sb.from('diapers').update(payload).eq('id', existing.id)
+          : await sb.from('diapers').insert({ ...payload, family_id: state.family.id, created_by: state.session.user.id, created_by_name: state.member.display_name });
+        if (res.error) { ev.target.disabled = false; return toast(errText(res.error)); }
+        if (color) lsSet('lastPoopColor', color);
+        closeSheet();
+        toast(isEdit ? '已更新 ✨' : '記錄好了 🧷');
+        if (!sameDay(v.at, state.day) && v.at <= new Date()) state.day = startOfDay(v.at);
+        loadData();
+      });
+      const del = $sheet.querySelector('#d-del');
+      if (del) del.addEventListener('click', async () => {
+        if (!confirm('確定要刪除這筆尿布紀錄嗎？')) return;
+        const { error } = await sb.from('diapers').delete().eq('id', existing.id);
+        if (error) return toast(errText(error));
+        closeSheet(); toast('已刪除'); loadData();
+      });
+    }
+    openSheet(html(), mount);
   }
 
   // ---------- 成長曲線（WHO 兒童生長標準，年齡別體重） ----------
