@@ -717,7 +717,7 @@
     return `<svg viewBox="0 0 ${W} ${H}" class="rhythm" role="img" aria-label="喝奶時間分布">${svg}</svg>
       <div class="glegend"><span><i class="rl formula"></i>配方奶</span><span><i class="rl bottle_breast"></i>瓶餵母乳</span><span><i class="rl breast"></i>親餵</span><span>圓越大喝越多</span></div>
       <div class="rstats">
-        <div><small>最常喝奶的時段</small><b>${ranked.map((b) => `${b.i * 2}–${b.i * 2 + 2}`).join('、')} 點}</b></div>
+        <div><small>最常喝奶的時段</small><b>${ranked.map((b) => `${b.i * 2}–${b.i * 2 + 2}`).join('、')} 點</b></div>
         <div><small>平均間隔</small><b>${avgGap ? duration(avgGap) : '－'}</b></div>
         <div><small>夜奶（22～6 點）</small><b>平均每晚 ${(night / daysWith).toFixed(1).replace(/\.0$/, '')} 次</b></div>
       </div>
