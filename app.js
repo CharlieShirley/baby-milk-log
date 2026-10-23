@@ -692,19 +692,20 @@
     const bins = Array.from({ length: 12 }, () => ({ n: 0, ml: 0 }));
     all.forEach((r) => { const b = bins[Math.floor(new Date(r.fed_at).getHours() / 2)]; b.n += 1; b.ml += r.amount_ml || 0; });
     const daysWith = days.filter((d) => dayRows(d).length).length || 1;
-    const maxBin = Math.max(...bins.map((b) => b.n), 1);
+    const maxBin = Math.max(...bins.map((b) => b.ml), 1);
     const hTop = gridH + 22; const hH = 54;
     bins.forEach((b, i) => {
-      const bh = (b.n / maxBin) * hH;
-      svg += `<rect x="${X(i * 2) + 2}" y="${hTop + hH - bh}" width="${X(2) - X(0) - 4}" height="${Math.max(bh, b.n ? 3 : 0)}" rx="5" class="hb"/>`;
-      if (b.n) svg += `<text x="${X(i * 2 + 1)}" y="${hTop + hH - bh - 4}" class="ax" text-anchor="middle">${(b.n / daysWith).toFixed(1).replace(/\.0$/, '')}</text>`;
+      const bh = (b.ml / maxBin) * hH;
+      svg += `<rect x="${X(i * 2) + 2}" y="${hTop + hH - bh}" width="${X(2) - X(0) - 4}" height="${Math.max(bh, b.ml ? 3 : 0)}" rx="5" class="hb"/>`;
+      if (b.ml) svg += `<text x="${X(i * 2 + 1)}" y="${hTop + hH - bh - 4}" class="ax" text-anchor="middle">${Math.round(b.ml / daysWith)}</text>`;
     });
     for (let h = 0; h <= 24; h += 6) {
       svg += `<text x="${X(h)}" y="${hTop + hH + 14}" class="ax" text-anchor="${h === 0 ? 'start' : h === 24 ? 'end' : 'middle'}">${h}:00</text>`;
     }
     const H = hTop + hH + 20;
 
-    const ranked = bins.map((b, i) => ({ ...b, i })).filter((b) => b.n).sort((a, b) => b.n - a.n || b.ml - a.ml).slice(0, 3);
+    const ranked = bins.map((b, i) => ({ ...b, i })).filter((b) => b.ml).sort((a, b) => b.ml - a.ml).slice(0, 3);
+    const nightMl = all.filter((r) => { const h = new Date(r.fed_at).getHours(); return h >= 22 || h < 6; }).reduce((a, r) => a + (r.amount_ml || 0), 0);
     const night = all.filter((r) => { const h = new Date(r.fed_at).getHours(); return h >= 22 || h < 6; }).length;
     const gaps = [];
     const sorted = all.slice().sort((a, b) => new Date(a.fed_at) - new Date(b.fed_at));
@@ -717,11 +718,11 @@
     return `<svg viewBox="0 0 ${W} ${H}" class="rhythm" role="img" aria-label="喝奶時間分布">${svg}</svg>
       <div class="glegend"><span><i class="rl formula"></i>配方奶</span><span><i class="rl bottle_breast"></i>瓶餵母乳</span><span><i class="rl breast"></i>親餵</span><span>圓越大喝越多</span></div>
       <div class="rstats">
-        <div><small>最常喝奶的時段</small><b>${ranked.map((b) => `${b.i * 2}–${b.i * 2 + 2}`).join('、')} 點</b></div>
+        <div><small>喝最多的時段</small><b>${ranked.length ? `${ranked.map((b) => `${b.i * 2}–${b.i * 2 + 2}`).join('、')} 點` : '－'}</b></div>
         <div><small>平均間隔</small><b>${avgGap ? duration(avgGap) : '－'}</b></div>
-        <div><small>夜奶（22～6 點）</small><b>平均每晚 ${(night / daysWith).toFixed(1).replace(/\.0$/, '')} 次</b></div>
+        <div><small>夜奶（22～6 點）</small><b>平均每晚 ${Math.round(nightMl / daysWith)} ml・${(night / daysWith).toFixed(1).replace(/\.0$/, '')} 次</b></div>
       </div>
-      <p class="hint" style="margin:6px 0 0">下方長條是每 2 小時平均每天餵幾次；灰底是夜間</p>`;
+      <p class="hint" style="margin:6px 0 0">下方長條是每 2 小時平均每天喝幾 ml（親餵沒有 ml，不計入）；灰底是夜間</p>`;
   }
 
   function rowHtml(r, prev) {
