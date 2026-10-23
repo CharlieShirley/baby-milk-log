@@ -28,6 +28,8 @@
     growth: [],
     diapers: [],
     lastDiaper: null,
+    supplements: [],
+    doses: [],
   };
 
   function lsGetEarly(k, fallback) { try { const v = localStorage.getItem(k); return v == null ? fallback : JSON.parse(v); } catch { return fallback; } }
@@ -356,7 +358,7 @@
   async function loadData() {
     const from = addDays(state.day, -6);
     const to = addDays(state.day, 1);
-    const [rowsRes, lastRes, growthRes, diaperRes, lastDiaperRes] = await Promise.all([
+    const [rowsRes, lastRes, growthRes, diaperRes, lastDiaperRes, supRes, doseRes] = await Promise.all([
       sb.from('feedings').select('*').eq('family_id', state.family.id)
         .gte('fed_at', from.toISOString()).lt('fed_at', to.toISOString()).order('fed_at'),
       sb.from('feedings').select('fed_at, kind, amount_ml').eq('family_id', state.family.id)
@@ -366,6 +368,9 @@
         .gte('changed_at', from.toISOString()).lt('changed_at', to.toISOString()).order('changed_at'),
       sb.from('diapers').select('changed_at, kind').eq('family_id', state.family.id)
         .order('changed_at', { ascending: false }).limit(1),
+      sb.from('supplements').select('*').eq('family_id', state.family.id).order('created_at'),
+      sb.from('supplement_doses').select('*').eq('family_id', state.family.id)
+        .gte('dose_date', dayKey(from)).lte('dose_date', dayKey(state.day)),
     ]);
     if (rowsRes.error) {
       if (isNetworkError(rowsRes.error) && !state.rows.length) return renderOffline();
@@ -376,6 +381,8 @@
     state.growth = growthRes.data || [];
     state.diapers = diaperRes.data || [];
     state.lastDiaper = (lastDiaperRes.data || [])[0] || null;
+    state.supplements = supRes.data || [];
+    state.doses = doseRes.data || [];
     renderMain();
   }
 
@@ -395,6 +402,9 @@
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'growth' }, scheduleReload)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'diapers', filter: `family_id=eq.${state.family.id}` }, scheduleReload)
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'diapers' }, scheduleReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'supplements', filter: `family_id=eq.${state.family.id}` }, scheduleReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'supplement_doses', filter: `family_id=eq.${state.family.id}` }, scheduleReload)
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'supplement_doses' }, scheduleReload)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'families', filter: `id=eq.${state.family.id}` }, async () => { await loadFamily(); renderMain(); })
       .subscribe((status) => {
         state.live = status === 'SUBSCRIBED';
@@ -439,6 +449,7 @@
     return `<nav class="tabbar">
       <button data-tab="milk" class="${state.tab === 'milk' ? 'on' : ''}"><span class="e">🍼</span>喝奶</button>
       <button data-tab="diaper" class="${state.tab === 'diaper' ? 'on' : ''}"><span class="e">🧷</span>尿布</button>
+      <button data-tab="supp" class="${state.tab === 'supp' ? 'on' : ''}"><span class="e">💊</span>營養品</button>
       <button data-tab="growth" class="${state.tab === 'growth' ? 'on' : ''}"><span class="e">📈</span>成長曲線</button>
     </nav>`;
   }
@@ -484,6 +495,7 @@
     if (!state.family) return;
     if (state.tab === 'growth') return renderGrowth();
     if (state.tab === 'diaper') return renderDiapers();
+    if (state.tab === 'supp') return renderSupplements();
     const fam = state.family;
     const rows = dayRows(state.day);
     const t = totals(rows);
@@ -972,6 +984,199 @@
       if (del) del.addEventListener('click', async () => {
         if (!confirm('確定要刪除這筆尿布紀錄嗎？')) return;
         const { error } = await sb.from('diapers').delete().eq('id', existing.id);
+        if (error) return toast(errText(error));
+        closeSheet(); toast('已刪除'); loadData();
+      });
+    }
+    openSheet(html(), mount);
+  }
+
+  // ---------- 營養品 ----------
+
+  // 某一天要餵的項目：每個營養品的每個時間各一格（沒設時間就一天一次）
+  function supplementSlots(d) {
+    const k = dayKey(d);
+    const doses = state.doses.filter((x) => x.dose_date === k);
+    const slots = [];
+    for (const sp of state.supplements) {
+      const times = (sp.times && sp.times.length ? sp.times.slice().sort() : ['']);
+      const hasDose = doses.some((x) => x.supplement_id === sp.id);
+      // 停用的項目只在當天有餵過時才顯示，保留歷史
+      if (!sp.active && !hasDose) continue;
+      // 新增之前的日子不顯示
+      if (dayKey(new Date(sp.created_at)) > k && !hasDose) continue;
+      for (const t of times) {
+        slots.push({ sp, slot: t, dose: doses.find((x) => x.supplement_id === sp.id && x.slot === t) || null });
+      }
+    }
+    return slots.sort((a, b) => (a.slot || '99:99').localeCompare(b.slot || '99:99') || a.sp.name.localeCompare(b.sp.name));
+  }
+
+  function renderSupplements() {
+    const slots = supplementSlots(state.day);
+    const done = slots.filter((x) => x.dose).length;
+    const isToday = sameDay(state.day, new Date());
+    const nowHm = hhmm(new Date());
+    const pct = slots.length ? done / slots.length : 0;
+
+    const week = [];
+    for (let i = 6; i >= 0; i -= 1) {
+      const dd = addDays(state.day, -i);
+      const ss = supplementSlots(dd);
+      week.push({ d: dd, total: ss.length, done: ss.filter((x) => x.dose).length });
+    }
+
+    const items = slots.map((x) => {
+      const late = isToday && !x.dose && x.slot && x.slot < nowHm;
+      const by = x.dose ? `✓ ${hhmm(new Date(x.dose.given_at))}${x.dose.given_by_name ? ` · ${x.dose.given_by_name}` : ''}` : late ? '時間到了，還沒餵' : '';
+      return `<li class="supp ${x.dose ? 'done' : ''} ${late ? 'late' : ''}">
+        <button type="button" class="tick" data-tick="${x.sp.id}|${x.slot}" aria-label="${x.dose ? '取消打勾' : '打勾'}">${x.dose ? '✓' : ''}</button>
+        <span class="time">${x.slot || '每天'}</span>
+        <span class="info"><div class="main">${esc(x.sp.name)}</div>
+          <div class="meta">${esc([x.sp.dose, by].filter(Boolean).join(' · '))}</div></span>
+      </li>`;
+    }).join('');
+
+    $app.innerHTML = `${headerHtml()}
+      ${daynavHtml()}
+      <section class="card">
+        <div class="card-title">💊 ${isToday ? '今天' : '這天'}的營養品<span class="sub">${done} / ${slots.length} 完成</span></div>
+        <div class="sbar"><div style="width:${pct * 100}%"></div></div>
+        ${slots.length && done === slots.length ? '<p class="gnote ok">全部都餵好了，真棒！🎉</p>' : ''}
+        ${items ? `<ul class="timeline">${items}</ul>`
+          : `<div class="empty"><span class="e">🍶</span>還沒有設定營養品，按下面的按鈕新增，例如維生素 D、益生菌</div>`}
+      </section>
+      ${state.supplements.length ? `<section class="card">
+        <div class="card-title">📅 近 7 天完成度</div>
+        <div class="sweek">${week.map((w) => `
+          <button type="button" class="sday ${sameDay(w.d, state.day) ? 'sel' : ''} ${w.total && w.done === w.total ? 'all' : w.done ? 'some' : ''}" data-day="${w.d.getTime()}">
+            <span class="d">${sameDay(w.d, new Date()) ? '今' : WEEKDAYS[w.d.getDay()]}</span>
+            <span class="c">${w.total ? (w.done === w.total ? '✓' : `${w.done}/${w.total}`) : '－'}</span>
+          </button>`).join('')}</div>
+      </section>` : ''}
+      <div class="fab-row">
+        <button class="fab wide" id="manage-supp" style="background:var(--mint)"><span class="e">🍶</span>${state.supplements.length ? '管理營養品' : '新增營養品'}</button>
+      </div>
+      ${tabbarHtml()}`;
+    bindChrome();
+    bindDaynav();
+    $app.querySelector('#manage-supp').addEventListener('click', () => (state.supplements.length ? openSupplementList() : openSupplement({})));
+    $app.querySelectorAll('.sday').forEach((el) => el.addEventListener('click', () => { state.day = new Date(Number(el.dataset.day)); loadData(); }));
+    $app.querySelectorAll('[data-tick]').forEach((b) => b.addEventListener('click', async () => {
+      const [spId, slot] = b.dataset.tick.split('|');
+      const k = dayKey(state.day);
+      const existing = state.doses.find((x) => x.supplement_id === spId && x.dose_date === k && x.slot === slot);
+      b.disabled = true;
+      let error;
+      if (existing) {
+        ({ error } = await sb.from('supplement_doses').delete().eq('id', existing.id));
+        if (!error) state.doses = state.doses.filter((x) => x.id !== existing.id);
+      } else {
+        // 補記過去的日子時，時間用那天該餵的時間
+        const at = isToday || !slot ? new Date() : new Date(`${k}T${slot}:00`);
+        const res = await sb.from('supplement_doses').upsert({
+          family_id: state.family.id, supplement_id: spId, dose_date: k, slot,
+          given_at: (isToday ? new Date() : at).toISOString(), given_by: state.session.user.id, given_by_name: state.member.display_name,
+        }, { onConflict: 'supplement_id,dose_date,slot' }).select().single();
+        error = res.error;
+        if (!error && res.data) state.doses.push(res.data);
+      }
+      if (error) { b.disabled = false; return toast(errText(error)); }
+      renderMain();
+    }));
+  }
+
+  function openSupplementList() {
+    const rows = state.supplements.map((sp) => `
+      <li data-sid="${sp.id}" style="cursor:pointer">
+        <span class="bubble" style="background:var(--mint)">💊</span>
+        <span class="info"><div class="main">${esc(sp.name)}${sp.active ? '' : '（已停用）'}</div>
+          <div class="meta">${esc([sp.dose, sp.times && sp.times.length ? sp.times.slice().sort().join('、') : '每天一次'].filter(Boolean).join(' · '))}</div></span>
+        <span class="gap">修改 ›</span>
+      </li>`).join('');
+    openSheet(`
+      <h2>管理營養品</h2>
+      <div class="card"><ul class="timeline">${rows}</ul></div>
+      <button class="btn" id="sp-add">＋ 新增營養品</button>
+      <button class="btn ghost" id="sp-close">回到營養品</button>`, () => {
+      $sheet.querySelector('#sp-add').addEventListener('click', () => openSupplement({}));
+      $sheet.querySelector('#sp-close').addEventListener('click', closeSheet);
+      $sheet.querySelectorAll('[data-sid]').forEach((el) => el.addEventListener('click', () => {
+        const sp = state.supplements.find((x) => x.id === el.dataset.sid);
+        if (sp) openSupplement(sp);
+      }));
+    });
+  }
+
+  function openSupplement(existing) {
+    const isEdit = !!existing.id;
+    const v = {
+      name: existing.name || '',
+      dose: existing.dose || '',
+      times: existing.times && existing.times.length ? existing.times.slice().sort() : ['09:00'],
+      active: existing.active !== false,
+    };
+    function html() {
+      return `
+        <h2>${isEdit ? '修改營養品' : '新增營養品'}</h2>
+        <div class="field"><label>名稱</label>
+          <input class="input" id="sp-name" maxlength="40" placeholder="例如：維生素 D 滴劑" value="${esc(v.name)}"></div>
+        <div class="field"><label>份量（可不填）</label>
+          <input class="input" id="sp-dose" maxlength="40" placeholder="例如：1 滴、半包" value="${esc(v.dose)}"></div>
+        <div class="field"><label>每天要餵的時間</label>
+          ${v.times.map((t, i) => `<div class="trow">
+            <input class="input" type="time" data-ti="${i}" value="${esc(t)}">
+            <button type="button" class="step" data-trm="${i}" aria-label="移除這個時間">−</button></div>`).join('')}
+          <button type="button" class="chip" id="sp-addtime">＋ 再加一個時間</button>
+          <p class="hint" style="text-align:left">一天要餵幾次就加幾個時間；全部移除的話就是「每天一次、不限時間」</p></div>
+        ${isEdit ? `<div class="field"><label>狀態</label><div class="seg two">
+          <button type="button" data-act="1" class="${v.active ? 'on' : ''}">✅ 使用中</button>
+          <button type="button" data-act="0" class="${v.active ? '' : 'on'}">⏸️ 停用</button></div>
+          <p class="hint" style="text-align:left">停用後就不會出現在每天的清單，但以前的打勾紀錄會保留</p></div>` : ''}
+        <button class="btn" id="sp-save">${isEdit ? '儲存' : '新增'}</button>
+        ${isEdit ? '<button class="btn danger" id="sp-del">刪除（連同所有打勾紀錄）</button>' : ''}
+        <button class="btn ghost" id="sp-cancel">取消</button>`;
+    }
+    function collect() {
+      v.name = $sheet.querySelector('#sp-name').value;
+      v.dose = $sheet.querySelector('#sp-dose').value;
+      $sheet.querySelectorAll('[data-ti]').forEach((el) => { v.times[Number(el.dataset.ti)] = el.value; });
+    }
+    function rerender() { const top = $sheet.scrollTop; setSheetHtml(html()); mount(); $sheet.scrollTop = top; }
+    function mount() {
+      $sheet.querySelector('#sp-addtime').addEventListener('click', () => {
+        collect();
+        const last = v.times[v.times.length - 1];
+        let next = '12:00';
+        if (last) { const [h, m] = last.split(':').map(Number); next = `${pad((h + 4) % 24)}:${pad(m)}`; }
+        v.times.push(next); rerender();
+      });
+      $sheet.querySelectorAll('[data-trm]').forEach((b) => b.addEventListener('click', () => {
+        collect(); v.times.splice(Number(b.dataset.trm), 1); rerender();
+      }));
+      $sheet.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => {
+        collect(); v.active = b.dataset.act === '1'; rerender();
+      }));
+      $sheet.querySelector('#sp-cancel').addEventListener('click', closeSheet);
+      $sheet.querySelector('#sp-save').addEventListener('click', async (ev) => {
+        collect();
+        const name = v.name.trim();
+        if (!name) return toast('請輸入營養品名稱');
+        const times = [...new Set(v.times.filter(Boolean))].sort();
+        ev.target.disabled = true;
+        const payload = { name, dose: v.dose.trim() || null, times, active: v.active };
+        const res = isEdit
+          ? await sb.from('supplements').update(payload).eq('id', existing.id)
+          : await sb.from('supplements').insert({ ...payload, family_id: state.family.id });
+        if (res.error) { ev.target.disabled = false; return toast(errText(res.error)); }
+        closeSheet();
+        toast(isEdit ? '已更新 ✨' : '新增好了 💊');
+        loadData();
+      });
+      const del = $sheet.querySelector('#sp-del');
+      if (del) del.addEventListener('click', async () => {
+        if (!confirm(`確定要刪除「${existing.name}」嗎？以前的打勾紀錄也會一起刪掉。只是暫時不吃的話，建議改成「停用」。`)) return;
+        const { error } = await sb.from('supplements').delete().eq('id', existing.id);
         if (error) return toast(errText(error));
         closeSheet(); toast('已刪除'); loadData();
       });

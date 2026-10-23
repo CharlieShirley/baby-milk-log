@@ -263,3 +263,55 @@ begin
 exception when duplicate_object then null;
 end;
 $$;
+
+-- 營養品：自訂項目與每天要餵的時間，每天打勾確認
+create table if not exists public.supplements (
+  id uuid primary key default gen_random_uuid(),
+  family_id uuid not null references public.families(id) on delete cascade,
+  name text not null check (length(trim(name)) between 1 and 40),
+  dose text check (dose is null or length(dose) <= 40),
+  times text[] not null default '{}',
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+create index if not exists supplements_family on public.supplements (family_id);
+
+create table if not exists public.supplement_doses (
+  id uuid primary key default gen_random_uuid(),
+  family_id uuid not null references public.families(id) on delete cascade,
+  supplement_id uuid not null references public.supplements(id) on delete cascade,
+  dose_date date not null,
+  slot text not null default '',
+  given_at timestamptz not null default now(),
+  given_by uuid references auth.users(id) on delete set null,
+  given_by_name text,
+  unique (supplement_id, dose_date, slot)
+);
+create index if not exists supplement_doses_family_date on public.supplement_doses (family_id, dose_date);
+create index if not exists supplement_doses_given_by on public.supplement_doses (given_by);
+
+alter table public.supplements enable row level security;
+alter table public.supplement_doses enable row level security;
+drop policy if exists "supplements read" on public.supplements;
+create policy "supplements read" on public.supplements for select to authenticated using (family_id = (select public.my_family_id()));
+drop policy if exists "supplements insert" on public.supplements;
+create policy "supplements insert" on public.supplements for insert to authenticated with check (family_id = (select public.my_family_id()));
+drop policy if exists "supplements update" on public.supplements;
+create policy "supplements update" on public.supplements for update to authenticated using (family_id = (select public.my_family_id())) with check (family_id = (select public.my_family_id()));
+drop policy if exists "supplements delete" on public.supplements;
+create policy "supplements delete" on public.supplements for delete to authenticated using (family_id = (select public.my_family_id()));
+drop policy if exists "doses read" on public.supplement_doses;
+create policy "doses read" on public.supplement_doses for select to authenticated using (family_id = (select public.my_family_id()));
+drop policy if exists "doses insert" on public.supplement_doses;
+create policy "doses insert" on public.supplement_doses for insert to authenticated with check (family_id = (select public.my_family_id()));
+drop policy if exists "doses update" on public.supplement_doses;
+create policy "doses update" on public.supplement_doses for update to authenticated using (family_id = (select public.my_family_id())) with check (family_id = (select public.my_family_id()));
+drop policy if exists "doses delete" on public.supplement_doses;
+create policy "doses delete" on public.supplement_doses for delete to authenticated using (family_id = (select public.my_family_id()));
+
+do $$
+begin
+  alter publication supabase_realtime add table public.supplements, public.supplement_doses;
+exception when duplicate_object then null;
+end;
+$$;
