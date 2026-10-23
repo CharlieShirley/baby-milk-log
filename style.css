@@ -44,7 +44,7 @@ button { cursor: pointer; border: none; background: none; }
 #app {
   max-width: 480px;
   margin: 0 auto;
-  padding: calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 110px);
+  padding: calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 170px);
 }
 
 .splash { display: grid; place-items: center; min-height: 70vh; font-size: 64px; }
@@ -157,8 +157,8 @@ button { cursor: pointer; border: none; background: none; }
 
 /* ---------- 新增按鈕 ---------- */
 .fab-row {
-  position: fixed; left: 0; right: 0; bottom: 0;
-  padding: 12px 16px calc(env(safe-area-inset-bottom) + 14px);
+  position: fixed; left: 0; right: 0; bottom: calc(env(safe-area-inset-bottom) + 60px);
+  padding: 12px 16px 10px;
   background: linear-gradient(180deg, rgba(255, 243, 228, 0), var(--bg) 40%);
   display: flex; justify-content: center; gap: 10px; z-index: 5;
 }
@@ -281,3 +281,50 @@ textarea.input { height: 76px; padding: 10px 14px; resize: none; }
 .k-formula { background: var(--sky); }
 .k-bottle_breast { background: var(--pink); }
 .k-breast { background: var(--mint); }
+
+/* ---------- 分頁 ---------- */
+.tabbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 6;
+  display: flex; justify-content: center; gap: 6px;
+  background: var(--card); box-shadow: 0 -4px 16px rgba(176, 120, 80, 0.12);
+  border-radius: 22px 22px 0 0; padding: 6px 16px calc(env(safe-area-inset-bottom) + 6px);
+}
+.tabbar button {
+  flex: 1; max-width: 200px; height: 48px; border-radius: 16px; font-weight: 800; font-size: 13px; color: var(--ink-soft);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.2;
+}
+.tabbar button .e { font-size: 20px; filter: grayscale(0.6); opacity: 0.7; }
+.tabbar button.on { color: var(--ink); background: #FFF0EA; }
+.tabbar button.on .e { filter: none; opacity: 1; }
+.fab.wide { max-width: 320px; flex-direction: row; gap: 8px; font-size: 16px; }
+
+/* ---------- 成長曲線 ---------- */
+.gsum { display: flex; align-items: center; gap: 16px; }
+.gw { background: var(--butter); border-radius: 20px; padding: 10px 16px; text-align: center; line-height: 1.1; }
+.gw b { font-size: 32px; font-weight: 800; display: block; }
+.gw small { color: var(--ink-soft); }
+.gp { font-size: 20px; font-weight: 800; }
+.gm { font-size: 13px; color: var(--ink-soft); }
+.gnote { margin: 12px 0 0; padding: 10px 12px; border-radius: 14px; font-size: 14px; }
+.gnote.ok { background: #EAF7F0; color: #3F7D62; }
+.gnote.warn { background: #FFF1E0; color: #A8642A; }
+.gchart { width: 100%; height: auto; display: block; }
+.gchart .gl { stroke: var(--line); stroke-width: 1; }
+.gchart .gl.v { stroke-dasharray: 2 3; }
+.gchart .ax { font-size: 10px; fill: var(--ink-soft); font-family: inherit; }
+.gchart .pl { font-size: 9px; fill: var(--ink-soft); font-weight: 700; font-family: inherit; }
+.gchart.boy .band1 { fill: #C8E3F7; opacity: 0.45; }
+.gchart.boy .band2 { fill: #C8E3F7; opacity: 0.75; }
+.gchart.girl .band1 { fill: #FFD3DC; opacity: 0.45; }
+.gchart.girl .band2 { fill: #FFD3DC; opacity: 0.75; }
+.gchart .pline { fill: none; stroke: #B9A08F; stroke-width: 1; opacity: 0.7; }
+.gchart .pline.thin { stroke-dasharray: 3 3; }
+.gchart .pline.mid { stroke: #8A6E5C; stroke-width: 1.5; opacity: 0.9; }
+.gchart .baby-line { fill: none; stroke: var(--peach-deep); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.gchart .baby-dot { fill: #fff; stroke: var(--peach-deep); stroke-width: 2.5; }
+.glegend { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; font-size: 12px; color: var(--ink-soft); margin-top: 6px; }
+.glegend i { display: inline-block; width: 14px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+.glegend .lg1 { background: #E3EEF6; }
+.glegend .lg2 { background: #C8E3F7; }
+.glegend .lg3 { background: var(--peach-deep); border-radius: 50%; width: 10px; }
+.amount .val input::placeholder { color: var(--line); }

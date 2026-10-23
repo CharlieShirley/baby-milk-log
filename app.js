@@ -24,7 +24,11 @@
     last: null,
     channel: null,
     live: false,
+    tab: lsGetEarly('tab', 'milk'),
+    growth: [],
   };
+
+  function lsGetEarly(k, fallback) { try { const v = localStorage.getItem(k); return v == null ? fallback : JSON.parse(v); } catch { return fallback; } }
 
   let sb = null;
 
@@ -329,15 +333,17 @@
   async function loadData() {
     const from = addDays(state.day, -6);
     const to = addDays(state.day, 1);
-    const [rowsRes, lastRes] = await Promise.all([
+    const [rowsRes, lastRes, growthRes] = await Promise.all([
       sb.from('feedings').select('*').eq('family_id', state.family.id)
         .gte('fed_at', from.toISOString()).lt('fed_at', to.toISOString()).order('fed_at'),
       sb.from('feedings').select('fed_at, kind, amount_ml').eq('family_id', state.family.id)
         .order('fed_at', { ascending: false }).limit(1),
+      sb.from('growth').select('*').eq('family_id', state.family.id).order('measured_on'),
     ]);
     if (rowsRes.error) { toast(errText(rowsRes.error)); return; }
     state.rows = rowsRes.data || [];
     state.last = (lastRes.data || [])[0] || null;
+    state.growth = growthRes.data || [];
     renderMain();
   }
 
@@ -353,6 +359,8 @@
       .on('postgres_changes', { event: '*', schema: 'public', table: 'feedings', filter: `family_id=eq.${state.family.id}` }, scheduleReload)
       // 刪除事件不帶 family_id，無法套用 filter，另外監聽
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'feedings' }, scheduleReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'growth', filter: `family_id=eq.${state.family.id}` }, scheduleReload)
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'growth' }, scheduleReload)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'families', filter: `id=eq.${state.family.id}` }, async () => { await loadFamily(); renderMain(); })
       .subscribe((status) => {
         state.live = status === 'SUBSCRIBED';
@@ -380,8 +388,39 @@
     return t;
   }
 
+  function headerHtml() {
+    const fam = state.family;
+    return `
+      <header class="topbar">
+        ${avatarHtml()}
+        <div>
+          <h1>${esc(fam.baby_name)}</h1>
+          <div class="age">${esc(babyAge(fam.baby_birthday) || '點右上角設定生日')}</div>
+        </div>
+        <button class="icon-btn" id="settings" aria-label="設定">⚙️</button>
+      </header>`;
+  }
+
+  function tabbarHtml() {
+    return `<nav class="tabbar">
+      <button data-tab="milk" class="${state.tab === 'milk' ? 'on' : ''}"><span class="e">🍼</span>喝奶</button>
+      <button data-tab="growth" class="${state.tab === 'growth' ? 'on' : ''}"><span class="e">📈</span>成長曲線</button>
+    </nav>`;
+  }
+
+  function bindChrome() {
+    $app.querySelector('#settings').addEventListener('click', openSettings);
+    $app.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => {
+      if (state.tab === b.dataset.tab) return;
+      state.tab = b.dataset.tab; lsSet('tab', state.tab);
+      window.scrollTo(0, 0);
+      renderMain();
+    }));
+  }
+
   function renderMain() {
     if (!state.family) return;
+    if (state.tab === 'growth') return renderGrowth();
     const fam = state.family;
     const rows = dayRows(state.day);
     const t = totals(rows);
@@ -401,15 +440,7 @@
     const maxMl = Math.max(goal, ...week.map((w) => w.ml)) * 1.1;
     const weekAvg = Math.round(week.reduce((s, w) => s + w.ml, 0) / 7);
 
-    $app.innerHTML = `
-      <header class="topbar">
-        ${avatarHtml()}
-        <div>
-          <h1>${esc(fam.baby_name)}</h1>
-          <div class="age">${esc(babyAge(fam.baby_birthday) || '點右上角設定生日')}</div>
-        </div>
-        <button class="icon-btn" id="settings" aria-label="設定">⚙️</button>
-      </header>
+    $app.innerHTML = `${headerHtml()}
 
       ${sinceLast ? `<div class="card" style="display:flex;align-items:center;gap:10px;padding:12px 16px">
         <span style="font-size:22px">⏰</span>
@@ -466,11 +497,12 @@
         <button class="fab k-formula" data-kind="formula"><span class="e">🍼</span>配方奶</button>
         <button class="fab k-bottle_breast" data-kind="bottle_breast"><span class="e">🥛</span>瓶餵母乳</button>
         <button class="fab k-breast" data-kind="breast"><span class="e">🤱</span>親餵</button>
-      </div>`;
+      </div>
+      ${tabbarHtml()}`;
+    bindChrome();
 
     $app.querySelector('#prev').addEventListener('click', () => { state.day = addDays(state.day, -1); loadData(); });
     $app.querySelector('#next').addEventListener('click', () => { if (!isToday) { state.day = addDays(state.day, 1); loadData(); } });
-    $app.querySelector('#settings').addEventListener('click', openSettings);
     $app.querySelectorAll('.fab').forEach((b) => b.addEventListener('click', () => openFeeding({ kind: b.dataset.kind })));
     $app.querySelectorAll('[data-id]').forEach((el) => el.addEventListener('click', () => {
       const r = state.rows.find((x) => x.id === el.dataset.id);
@@ -644,6 +676,229 @@
   function clampInt(x, lo, hi) {
     const n = Math.round(Number(x));
     return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : lo;
+  }
+
+  // ---------- 成長曲線（WHO 兒童生長標準，年齡別體重） ----------
+
+  const BANDS = [
+    { p: 3, z: -1.880794 }, { p: 15, z: -1.036433 }, { p: 50, z: 0 }, { p: 85, z: 1.036433 }, { p: 97, z: 1.880794 },
+  ];
+
+  function lmsAt(sex, day) {
+    const t = (window.WHO_WFA || {})[sex];
+    if (!t || day < 0 || day > t[t.length - 1][0]) return null;
+    let lo = 0; let hi = t.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (t[mid][0] <= day) lo = mid; else hi = mid; }
+    const a = t[lo]; const b = t[hi];
+    const f = b[0] === a[0] ? 0 : (day - a[0]) / (b[0] - a[0]);
+    return { L: a[1] + (b[1] - a[1]) * f, M: a[2] + (b[2] - a[2]) * f, S: a[3] + (b[3] - a[3]) * f };
+  }
+  function weightAtZ(lms, z) { return lms.M * Math.pow(1 + lms.L * lms.S * z, 1 / lms.L); }
+  function zOf(lms, x) {
+    // WHO 方法：|z| > 3 時改用線性延伸
+    let z = (Math.pow(x / lms.M, lms.L) - 1) / (lms.L * lms.S);
+    if (z > 3) { const sd3 = weightAtZ(lms, 3); const sd23 = sd3 - weightAtZ(lms, 2); z = 3 + (x - sd3) / sd23; }
+    else if (z < -3) { const sd3 = weightAtZ(lms, -3); const sd23 = weightAtZ(lms, -2) - sd3; z = -3 + (x - sd3) / sd23; }
+    return z;
+  }
+  function normCdf(z) {
+    const t = 1 / (1 + 0.2316419 * Math.abs(z));
+    const d = 0.3989423 * Math.exp(-z * z / 2);
+    const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+    return z > 0 ? 1 - p : p;
+  }
+  function ageDays(birthday, dateStr) {
+    return Math.round((new Date(dateStr + 'T00:00:00') - new Date(birthday + 'T00:00:00')) / 86400000);
+  }
+  function ageLabel(days) {
+    if (days < 0) return '出生前';
+    const b = new Date(state.family.baby_birthday + 'T00:00:00');
+    const d = addDays(b, days);
+    let months = (d.getFullYear() - b.getFullYear()) * 12 + (d.getMonth() - b.getMonth());
+    if (d.getDate() < b.getDate()) months -= 1;
+    const anchor = new Date(b); anchor.setMonth(b.getMonth() + months);
+    const rest = Math.round((d - anchor) / 86400000);
+    if (months <= 0) return `${days} 天`;
+    return rest ? `${months} 個月 ${rest} 天` : `${months} 個月`;
+  }
+  function assess(g) {
+    const fam = state.family;
+    if (!fam.baby_birthday) return null;
+    const days = ageDays(fam.baby_birthday, g.measured_on);
+    const lms = lmsAt(fam.baby_gender === 'girl' ? 'girl' : 'boy', days);
+    if (!lms) return { days };
+    const z = zOf(lms, Number(g.weight_kg));
+    return { days, z, pct: normCdf(z) * 100 };
+  }
+  function pctText(pct) {
+    if (pct < 0.1) return '低於第 0.1 百分位';
+    if (pct > 99.9) return '高於第 99.9 百分位';
+    return `第 ${pct < 1 || pct > 99 ? pct.toFixed(1) : Math.round(pct)} 百分位`;
+  }
+  function pctComment(pct) {
+    if (pct < 3) return { cls: 'warn', text: '低於第 3 百分位，建議下次健兒門診時和醫師聊聊，或持續觀察幾次測量的趨勢。' };
+    if (pct > 97) return { cls: 'warn', text: '高於第 97 百分位，建議下次健兒門診時和醫師聊聊，或持續觀察幾次測量的趨勢。' };
+    if (pct < 15) return { cls: 'ok', text: '在正常範圍內（第 3～97 百分位），屬於偏小一點的寶寶，持續沿著自己的曲線長大就很好。' };
+    if (pct > 85) return { cls: 'ok', text: '在正常範圍內（第 3～97 百分位），屬於偏大一點的寶寶，持續沿著自己的曲線長大就很好。' };
+    return { cls: 'ok', text: '在正常範圍內（第 3～97 百分位），長得很棒！' };
+  }
+
+  function growthChartSvg() {
+    const fam = state.family;
+    const sex = fam.baby_gender === 'girl' ? 'girl' : 'boy';
+    const pts = state.growth.map((g) => ({ g, a: assess(g) })).filter((x) => x.a && x.a.days >= 0 && x.a.days <= 1826);
+    const todayDays = ageDays(fam.baby_birthday, dayKey(new Date()));
+    const lastDay = Math.max(todayDays, ...pts.map((x) => x.a.days), 0);
+    // 顯示到目前年齡再往後 2 個月，至少 6 個月
+    const months = Math.min(60, Math.max(6, Math.ceil(lastDay / 30.4375) + 2));
+    const maxDay = Math.min(1826, Math.round(months * 30.4375));
+
+    const W = 340; const H = 250; const pl = 30; const pr = 26; const pt = 20; const pb = 28;
+    const curve = (z) => { const out = []; for (let d = 0; d <= maxDay; d += Math.max(1, Math.round(maxDay / 80))) out.push([d, weightAtZ(lmsAt(sex, d), z)]); out.push([maxDay, weightAtZ(lmsAt(sex, maxDay), z)]); return out; };
+    const c3 = curve(BANDS[0].z); const c97 = curve(BANDS[4].z);
+    const yMin = Math.floor(Math.min(c3[0][1], ...pts.map((x) => Number(x.g.weight_kg))) - 0.5);
+    const yMax = Math.ceil(Math.max(c97[c97.length - 1][1], ...pts.map((x) => Number(x.g.weight_kg))) + 0.5);
+    const X = (d) => pl + (d / maxDay) * (W - pl - pr);
+    const Y = (w) => pt + (1 - (w - Math.max(0, yMin)) / (yMax - Math.max(0, yMin))) * (H - pt - pb);
+    const path = (c) => c.map(([d, w], i) => `${i ? 'L' : 'M'}${X(d).toFixed(1)},${Y(w).toFixed(1)}`).join('');
+    const area = (lo, hi) => `${path(hi)}${lo.slice().reverse().map(([d, w]) => `L${X(d).toFixed(1)},${Y(w).toFixed(1)}`).join('')}Z`;
+    const c15 = curve(BANDS[1].z); const c50 = curve(0); const c85 = curve(BANDS[3].z);
+
+    const yStep = yMax - yMin > 12 ? 2 : 1;
+    let grid = '';
+    for (let w = Math.max(0, yMin); w <= yMax; w += yStep) {
+      grid += `<line x1="${pl}" x2="${W - pr}" y1="${Y(w)}" y2="${Y(w)}" class="gl"/><text x="${pl - 5}" y="${Y(w) + 3.5}" class="ax" text-anchor="end">${w}</text>`;
+    }
+    const mStep = months <= 12 ? 1 : months <= 24 ? 3 : 6;
+    for (let m = 0; m <= months; m += mStep) {
+      const d = Math.round(m * 30.4375); if (d > maxDay) break;
+      grid += `<line x1="${X(d)}" x2="${X(d)}" y1="${pt}" y2="${H - pb}" class="gl v"/><text x="${X(d)}" y="${H - pb + 14}" class="ax" text-anchor="middle">${m}</text>`;
+    }
+    const labels = [[c3, 3], [c15, 15], [c50, 50], [c85, 85], [c97, 97]]
+      .map(([c, p]) => `<text x="${W - pr + 3}" y="${Y(c[c.length - 1][1]) + 3.5}" class="pl">${p}</text>`).join('');
+    const line = pts.length > 1 ? `<path d="${pts.map((x, i) => `${i ? 'L' : 'M'}${X(x.a.days).toFixed(1)},${Y(Number(x.g.weight_kg)).toFixed(1)}`).join('')}" class="baby-line"/>` : '';
+    const dots = pts.map((x) => `<circle cx="${X(x.a.days).toFixed(1)}" cy="${Y(Number(x.g.weight_kg)).toFixed(1)}" r="4.5" class="baby-dot"/>`).join('');
+
+    return `<svg viewBox="0 0 ${W} ${H}" class="gchart ${sex}" role="img" aria-label="體重成長曲線">
+      ${grid}
+      <path d="${area(c3, c97)}" class="band1"/>
+      <path d="${area(c15, c85)}" class="band2"/>
+      <path d="${path(c3)}" class="pline"/><path d="${path(c97)}" class="pline"/>
+      <path d="${path(c15)}" class="pline thin"/><path d="${path(c85)}" class="pline thin"/>
+      <path d="${path(c50)}" class="pline mid"/>
+      ${labels}${line}${dots}
+      <text x="${pl - 5}" y="${pt - 9}" class="ax" text-anchor="end">kg</text>
+      <text x="${W - pr}" y="${H - 3}" class="ax" text-anchor="end">月齡</text>
+    </svg>`;
+  }
+
+  function renderGrowth() {
+    const fam = state.family;
+    const sexLabel = fam.baby_gender === 'girl' ? '女孩' : '男孩';
+    const latest = state.growth[state.growth.length - 1];
+    const la = latest ? assess(latest) : null;
+    let summary;
+    if (!fam.baby_birthday) {
+      summary = `<div class="empty"><span class="e">🎂</span>先到右上角「設定」填寫寶寶的生日，才能對照成長曲線喔</div>`;
+    } else if (!latest) {
+      summary = `<div class="empty"><span class="e">⚖️</span>還沒有體重紀錄，按下面的按鈕記錄第一筆吧</div>`;
+    } else if (!la || la.z == null) {
+      summary = `<div class="empty"><span class="e">📏</span>最新一筆 ${Number(latest.weight_kg)} kg，但不在 0～5 歲的對照範圍內</div>`;
+    } else {
+      const c = pctComment(la.pct);
+      summary = `
+        <div class="gsum">
+          <div class="gw"><b>${Number(latest.weight_kg)}</b><small>kg</small></div>
+          <div class="gi">
+            <div class="gp">${pctText(la.pct)}</div>
+            <div class="gm">${latest.measured_on.replace(/-/g, '/')}・${ageLabel(la.days)}</div>
+          </div>
+        </div>
+        <p class="gnote ${c.cls}">${c.text}</p>`;
+    }
+    const list = state.growth.slice().reverse().map((g) => {
+      const a = assess(g);
+      return `<li data-gid="${g.id}" style="cursor:pointer">
+        <span class="time">${g.measured_on.slice(5).replace('-', '/')}</span>
+        <span class="bubble" style="background:var(--butter)">⚖️</span>
+        <span class="info"><div class="main">${Number(g.weight_kg)} kg</div>
+          <div class="meta">${esc([a && fam.baby_birthday ? ageLabel(a.days) : '', g.created_by_name && `by ${g.created_by_name}`, g.note].filter(Boolean).join(' · '))}</div></span>
+        <span class="gap">${a && a.pct != null ? `P${a.pct < 1 ? a.pct.toFixed(1) : Math.round(a.pct)}` : ''}</span>
+      </li>`;
+    }).join('');
+
+    $app.innerHTML = `${headerHtml()}
+      <section class="card">
+        <div class="card-title">📈 目前體重<span class="sub">對照 WHO ${sexLabel}標準</span></div>
+        ${summary}
+      </section>
+      ${fam.baby_birthday ? `<section class="card">
+        <div class="card-title">🌈 體重成長曲線</div>
+        ${growthChartSvg()}
+        <div class="glegend"><span><i class="lg1"></i>3～97 百分位</span><span><i class="lg2"></i>15～85 百分位</span><span><i class="lg3"></i>${esc(fam.baby_name)}</span></div>
+      </section>` : ''}
+      <section class="card">
+        <div class="card-title">📝 體重紀錄<span class="sub">點一下可以修改</span></div>
+        ${list ? `<ul class="timeline">${list}</ul>` : '<div class="empty">還沒有紀錄</div>'}
+      </section>
+      <p class="hint" style="margin:0 8px 14px">曲線依據世界衛生組織（WHO）兒童生長標準，和台灣兒童健康手冊使用的相同。百分位只是參考，寶寶是否健康請以兒科醫師的評估為準。性別依設定裡的頭像（小男生／小女生）。</p>
+      <div class="fab-row">
+        <button class="fab wide" id="add-weight" style="background:var(--butter)"><span class="e">⚖️</span>記錄體重</button>
+      </div>
+      ${tabbarHtml()}`;
+    bindChrome();
+    $app.querySelector('#add-weight').addEventListener('click', () => openWeight({}));
+    $app.querySelectorAll('[data-gid]').forEach((el) => el.addEventListener('click', () => {
+      const g = state.growth.find((x) => x.id === el.dataset.gid);
+      if (g) openWeight(g);
+    }));
+  }
+
+  function openWeight(existing) {
+    const isEdit = !!existing.id;
+    openSheet(`
+      <h2>${isEdit ? '修改體重' : '記錄體重'}</h2>
+      <div class="field"><label>測量日期</label>
+        <input class="input" type="date" id="w-date" value="${esc(existing.measured_on || dayKey(new Date()))}" max="${dayKey(new Date())}"></div>
+      <div class="field"><label>體重（公斤）</label>
+        <div class="amount"><div class="val"><input id="w-kg" type="number" inputmode="decimal" step="0.01" min="0.5" max="39"
+          placeholder="0.00" value="${existing.weight_kg != null ? Number(existing.weight_kg) : ''}"><small>kg</small></div></div>
+        <p class="hint" style="margin-top:4px">例如 4250 公克請輸入 4.25</p></div>
+      <div class="field"><label>備註</label>
+        <textarea class="input" id="w-note" placeholder="例如：健兒門診量的">${esc(existing.note || '')}</textarea></div>
+      <button class="btn" id="w-save">${isEdit ? '儲存' : '記錄下來'}</button>
+      ${isEdit ? '<button class="btn danger" id="w-del">刪除這筆</button>' : ''}
+      <button class="btn ghost" id="w-cancel">取消</button>
+    `, () => {
+      const kgInput = $sheet.querySelector('#w-kg');
+      if (!isEdit) setTimeout(() => kgInput.focus(), 250);
+      $sheet.querySelector('#w-cancel').addEventListener('click', closeSheet);
+      $sheet.querySelector('#w-save').addEventListener('click', async (ev) => {
+        let kg = Number(kgInput.value);
+        if (kg > 100) kg /= 1000; // 輸入成公克時自動換算
+        const date = $sheet.querySelector('#w-date').value;
+        if (!date) return toast('請選擇日期');
+        if (!(kg > 0.5 && kg < 40)) return toast('請輸入正確的體重（公斤）');
+        ev.target.disabled = true;
+        const payload = { measured_on: date, weight_kg: Math.round(kg * 1000) / 1000, note: $sheet.querySelector('#w-note').value.trim() || null };
+        const res = isEdit
+          ? await sb.from('growth').update(payload).eq('id', existing.id)
+          : await sb.from('growth').insert({ ...payload, family_id: state.family.id, created_by: state.session.user.id, created_by_name: state.member.display_name });
+        if (res.error) { ev.target.disabled = false; return toast(errText(res.error)); }
+        closeSheet();
+        toast(isEdit ? '已更新 ✨' : '記錄好了 ⚖️');
+        loadData();
+      });
+      const del = $sheet.querySelector('#w-del');
+      if (del) del.addEventListener('click', async () => {
+        if (!confirm('確定要刪除這筆體重紀錄嗎？')) return;
+        const { error } = await sb.from('growth').delete().eq('id', existing.id);
+        if (error) return toast(errText(error));
+        closeSheet();
+        toast('已刪除');
+        loadData();
+      });
+    });
   }
 
   // ---------- 設定 ----------
