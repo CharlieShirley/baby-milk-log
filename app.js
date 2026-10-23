@@ -355,6 +355,40 @@
     } finally { URL.revokeObjectURL(url); }
   }
 
+  // 照片等比例縮小到長邊 1280px，節省空間
+  async function fitJpeg(file, max = 1280) {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await new Promise((ok, fail) => {
+        const i = new Image(); i.onload = () => ok(i); i.onerror = () => fail(new Error('讀不到這張照片，請換一張試試')); i.src = url;
+      });
+      const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      return await new Promise((ok) => c.toBlob(ok, 'image/jpeg', 0.8));
+    } finally { URL.revokeObjectURL(url); }
+  }
+
+  const photoUrls = {};
+  async function photoUrlsFor(paths) {
+    const need = paths.filter((p) => p && !photoUrls[p]);
+    if (need.length) {
+      const { data } = await sb.storage.from('photos').createSignedUrls(need, 60 * 60 * 6);
+      (data || []).forEach((x) => { if (x.signedUrl) photoUrls[x.path] = x.signedUrl; });
+    }
+    return paths.map((p) => photoUrls[p] || null);
+  }
+
+  // 全螢幕看照片
+  function viewPhoto(url) {
+    const el = document.createElement('div');
+    el.className = 'photo-view';
+    el.innerHTML = `<img src="${esc(url)}" alt=""><button type="button" aria-label="關閉">✕</button>`;
+    el.addEventListener('click', () => el.remove());
+    document.body.appendChild(el);
+  }
+
   async function loadData() {
     const from = addDays(state.day, -6);
     const to = addDays(state.day, 1);
@@ -946,6 +980,7 @@
         <span class="bubble ${r.kind === 'pee' ? 'k-formula' : 'dk-poop'}">${r.kind === 'both' ? '💩' : k.emoji}</span>
         <span class="info"><div class="main">${k.label}${col ? ` <span class="pc" style="background:${col.css}"></span>${col.label}` : ''}</div>
           ${meta ? `<div class="meta">${esc(meta)}</div>` : ''}</span>
+        ${r.photo_path ? `<span class="thumb" data-photo="${esc(r.photo_path)}">📷</span>` : ''}
         <span class="gap">${prev ? `+${shortDuration(at - new Date(prev.changed_at))}` : ''}</span>
       </li>`;
     }).join('');
@@ -991,6 +1026,14 @@
     bindChrome();
     bindDaynav();
     $app.querySelectorAll('[data-dkind]').forEach((b) => b.addEventListener('click', () => openDiaper({ kind: b.dataset.dkind })));
+    const thumbs = [...$app.querySelectorAll('[data-photo]')];
+    if (thumbs.length) {
+      photoUrlsFor(thumbs.map((t) => t.dataset.photo)).then((urls) => thumbs.forEach((t, i) => {
+        if (!urls[i]) return;
+        t.innerHTML = `<img src="${esc(urls[i])}" alt="">`;
+        t.addEventListener('click', (ev) => { ev.stopPropagation(); viewPhoto(urls[i]); });
+      }));
+    }
     $app.querySelectorAll('[data-did]').forEach((el) => el.addEventListener('click', () => {
       const r = state.diapers.find((x) => x.id === el.dataset.did);
       if (r) openDiaper(r);
@@ -1007,9 +1050,14 @@
       at: isEdit ? new Date(existing.changed_at) : defaultTime(),
       color: isEdit ? existing.poop_color : lsGet('lastPoopColor', null),
       note: isEdit ? existing.note || '' : '',
+      photoPath: isEdit ? existing.photo_path || null : null,
+      photoUrl: null,
+      newPhoto: null,
     };
     function html() {
       const hasPoop = v.kind !== 'pee';
+      const shown = v.newPhoto ? v.newPhoto.url : v.photoUrl;
+      const hasPhoto = !!(v.newPhoto || v.photoPath);
       const warn = hasPoop && v.color && POOP_COLORS[v.color] && POOP_COLORS[v.color].warn;
       return `
         <h2>${isEdit ? '修改尿布紀錄' : '換尿布'}</h2>
@@ -1021,6 +1069,14 @@
           <div class="colors">${Object.entries(POOP_COLORS).map(([k, c]) =>
             `<button type="button" class="cchip ${v.color === k ? 'on' : ''}" data-pc="${k}"><span class="pc" style="background:${c.css}"></span>${c.label}</button>`).join('')}</div>
           ${warn ? `<p class="gnote warn">${esc(warn)}</p>` : ''}</div>` : ''}
+        <div class="field"><label>照片（可不加）</label>
+          ${hasPhoto ? `<div class="dphoto">${shown ? `<img src="${esc(shown)}" alt="" id="d-photo-img">` : '<div class="empty">照片載入中…</div>'}</div>` : ''}
+          <div class="sides">
+            <label class="btn ghost small" for="d-photo">📷 ${hasPhoto ? '換一張' : '拍照／選照片'}</label>
+            ${hasPhoto ? '<button type="button" class="btn danger small" id="d-photo-rm">移除照片</button>' : ''}
+          </div>
+          <input type="file" id="d-photo" accept="image/*" hidden>
+          <p class="hint" style="text-align:left">照片只有家人看得到，看醫生時可以給醫師參考</p></div>
         <div class="field"><label>備註</label>
           <textarea class="input" id="d-note" placeholder="例如：有點稀、紅屁屁…">${esc(v.note)}</textarea></div>
         <button class="btn" id="d-save">${isEdit ? '儲存' : '記錄下來'}</button>
@@ -1037,17 +1093,47 @@
       $sheet.querySelectorAll('[data-pc]').forEach((b) => b.addEventListener('click', () => {
         collect(); v.color = v.color === b.dataset.pc ? null : b.dataset.pc; rerender();
       }));
+      $sheet.querySelector('#d-photo').addEventListener('change', async (ev) => {
+        const file = ev.target.files && ev.target.files[0];
+        ev.target.value = '';
+        if (!file) return;
+        collect();
+        try {
+          const blob = await fitJpeg(file);
+          if (v.newPhoto) URL.revokeObjectURL(v.newPhoto.url);
+          v.newPhoto = { blob, url: URL.createObjectURL(blob) };
+          rerender();
+        } catch (e) { toast(errText(e)); }
+      });
+      const rm = $sheet.querySelector('#d-photo-rm');
+      if (rm) rm.addEventListener('click', () => {
+        collect();
+        if (v.newPhoto) { URL.revokeObjectURL(v.newPhoto.url); v.newPhoto = null; } else { v.photoPath = null; v.photoUrl = null; }
+        rerender();
+      });
+      const img = $sheet.querySelector('#d-photo-img');
+      if (img) img.addEventListener('click', () => viewPhoto(img.src));
       $sheet.querySelector('#d-cancel').addEventListener('click', closeSheet);
       $sheet.querySelector('#d-save').addEventListener('click', async (ev) => {
         collect();
         if (isNaN(v.at)) return toast('請選擇時間');
         ev.target.disabled = true;
         const color = v.kind === 'pee' ? null : v.color || null;
-        const payload = { kind: v.kind, changed_at: v.at.toISOString(), poop_color: color, note: v.note.trim() || null };
+        let photoPath = v.photoPath;
+        if (v.newPhoto) {
+          toast('照片上傳中…');
+          const path = `${state.family.id}/diapers/${Date.now()}.jpg`;
+          const up = await sb.storage.from('photos').upload(path, v.newPhoto.blob, { contentType: 'image/jpeg' });
+          if (up.error) { ev.target.disabled = false; return toast(errText(up.error)); }
+          photoPath = path;
+        }
+        const oldPath = isEdit ? existing.photo_path : null;
+        const payload = { kind: v.kind, changed_at: v.at.toISOString(), poop_color: color, note: v.note.trim() || null, photo_path: photoPath };
         const res = isEdit
           ? await sb.from('diapers').update(payload).eq('id', existing.id)
           : await sb.from('diapers').insert({ ...payload, family_id: state.family.id, created_by: state.session.user.id, created_by_name: state.member.display_name });
         if (res.error) { ev.target.disabled = false; return toast(errText(res.error)); }
+        if (oldPath && oldPath !== photoPath) sb.storage.from('photos').remove([oldPath]);
         if (color) lsSet('lastPoopColor', color);
         closeSheet();
         toast(isEdit ? '已更新 ✨' : '記錄好了 🧷');
@@ -1059,10 +1145,12 @@
         if (!confirm('確定要刪除這筆尿布紀錄嗎？')) return;
         const { error } = await sb.from('diapers').delete().eq('id', existing.id);
         if (error) return toast(errText(error));
+        if (existing.photo_path) sb.storage.from('photos').remove([existing.photo_path]);
         closeSheet(); toast('已刪除'); loadData();
       });
     }
     openSheet(html(), mount);
+    if (v.photoPath) photoUrlsFor([v.photoPath]).then(([u]) => { v.photoUrl = u; if (!$sheet.hidden && $sheet.querySelector('.dphoto')) { collect(); rerender(); } });
   }
 
   // ---------- 營養品 ----------

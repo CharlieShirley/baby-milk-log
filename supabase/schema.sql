@@ -315,3 +315,23 @@ begin
 exception when duplicate_object then null;
 end;
 $$;
+
+-- 尿布照片（存在私有的 photos bucket，只有同家庭看得到）
+alter table public.diapers add column if not exists photo_path text;
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('photos', 'photos', false, 3145728, array['image/jpeg', 'image/png', 'image/webp'])
+on conflict (id) do nothing;
+
+drop policy if exists "photos family read" on storage.objects;
+create policy "photos family read" on storage.objects for select to authenticated
+  using (bucket_id = 'photos' and (storage.foldername(name))[1] = (select public.my_family_id())::text);
+drop policy if exists "photos family insert" on storage.objects;
+create policy "photos family insert" on storage.objects for insert to authenticated
+  with check (bucket_id = 'photos' and (storage.foldername(name))[1] = (select public.my_family_id())::text);
+drop policy if exists "photos family update" on storage.objects;
+create policy "photos family update" on storage.objects for update to authenticated
+  using (bucket_id = 'photos' and (storage.foldername(name))[1] = (select public.my_family_id())::text);
+drop policy if exists "photos family delete" on storage.objects;
+create policy "photos family delete" on storage.objects for delete to authenticated
+  using (bucket_id = 'photos' and (storage.foldername(name))[1] = (select public.my_family_id())::text);

@@ -434,3 +434,12 @@ textarea.input { height: 76px; padding: 10px 14px; resize: none; }
 .rstats div { display: flex; justify-content: space-between; gap: 10px; background: var(--bg); border-radius: 12px; padding: 8px 12px; font-size: 14px; }
 .rstats small { color: var(--ink-soft); font-size: 13px; white-space: nowrap; }
 .rstats b { text-align: right; }
+
+/* ---------- 尿布照片 ---------- */
+.thumb { width: 40px; height: 40px; border-radius: 10px; overflow: hidden; flex: none; background: var(--bg); display: grid; place-items: center; font-size: 18px; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.dphoto { border-radius: 16px; overflow: hidden; margin-bottom: 8px; background: var(--card); }
+.dphoto img { width: 100%; max-height: 260px; object-fit: contain; display: block; cursor: zoom-in; }
+.photo-view { position: fixed; inset: 0; z-index: 50; background: rgba(30, 20, 15, 0.92); display: grid; place-items: center; padding: 16px; }
+.photo-view img { max-width: 100%; max-height: 100%; border-radius: 12px; }
+.photo-view button { position: absolute; top: calc(env(safe-area-inset-top) + 12px); right: 12px; width: 44px; height: 44px; border-radius: 50%; background: rgba(255,255,255,0.9); font-size: 18px; font-weight: 800; }
