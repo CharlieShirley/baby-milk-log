@@ -131,7 +131,8 @@
 
   async function boot() {
     const cfg = window.APP_CONFIG || {};
-    if (!cfg.SUPABASE_URL || !cfg.SUPABASE_ANON_KEY || !window.supabase) {
+    if (!window.supabase) return renderOffline('程式沒有載入完整，可能是網路不穩或被擋住了。');
+    if (!cfg.SUPABASE_URL || !cfg.SUPABASE_ANON_KEY) {
       $app.innerHTML = `
         <div class="hero"><div class="logo">🛠️</div><h1>還差一步</h1>
         <p>請在 config.js 填入 Supabase 的網址與 anon key</p></div>`;
@@ -161,11 +162,31 @@
     setInterval(() => { if (state.family && !document.hidden) renderMain(); }, 60000);
   }
 
+  function isNetworkError(e) {
+    return /Failed to fetch|NetworkError|Load failed|network/i.test((e && (e.message || e.details)) || String(e));
+  }
+
+  function renderOffline(reason) {
+    $app.innerHTML = `
+      <div class="hero"><div class="logo">📡</div><h1>連不上資料庫</h1>
+        <p>${esc(reason || '這支手機現在連不到紀錄存放的伺服器。')}</p></div>
+      <div class="card" style="font-size:14px">
+        <div class="card-title">可以試試看</div>
+        <ol style="margin:0;padding-left:20px;line-height:1.8">
+          <li>關掉 Wi-Fi 改用行動網路，再重新整理</li>
+          <li>如果行動網路可以、Wi-Fi 不行，通常是家裡路由器或網路業者的「防護／家長控制」擋住了 <b>supabase.co</b>，請把它加入允許清單</li>
+          <li>手機有開 VPN、廣告阻擋或「私密 DNS」的話，先暫時關掉試試</li>
+        </ol>
+      </div>
+      <button class="btn" id="retry">重新連線</button>`;
+    $app.querySelector('#retry').addEventListener('click', () => location.reload());
+  }
+
   async function route() {
     if (!state.session) { teardownRealtime(); state.member = state.family = null; return renderAuth(); }
     const { data: member, error } = await sb.from('family_members')
       .select('family_id, display_name').eq('user_id', state.session.user.id).maybeSingle();
-    if (error) { $app.innerHTML = `<p class="err">${esc(errText(error))}</p>`; return; }
+    if (error) return isNetworkError(error) ? renderOffline() : ($app.innerHTML = `<p class="err">${esc(errText(error))}</p>`);
     if (!member) return renderOnboarding();
     state.member = member;
     await loadFamily();
@@ -340,7 +361,10 @@
         .order('fed_at', { ascending: false }).limit(1),
       sb.from('growth').select('*').eq('family_id', state.family.id).order('measured_on'),
     ]);
-    if (rowsRes.error) { toast(errText(rowsRes.error)); return; }
+    if (rowsRes.error) {
+      if (isNetworkError(rowsRes.error) && !state.rows.length) return renderOffline();
+      toast(errText(rowsRes.error)); return;
+    }
     state.rows = rowsRes.data || [];
     state.last = (lastRes.data || [])[0] || null;
     state.growth = growthRes.data || [];
