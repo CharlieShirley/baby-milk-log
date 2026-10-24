@@ -453,3 +453,7 @@ input.input[type=date], input.input[type=time], input.input[type=datetime-local]
 input.input::-webkit-date-and-time-value { text-align: left; margin: 0; }
 input.input::-webkit-datetime-edit { padding: 0; }
 .trow input.input { flex: 1; width: auto; }
+
+.rhythm .rb.formula { fill: var(--sky-deep); }
+.rhythm .rb.bottle_breast { fill: var(--pink-deep); }
+.rhythm .vl { font-size: 9.5px; fill: var(--ink); font-weight: 700; font-family: inherit; }
