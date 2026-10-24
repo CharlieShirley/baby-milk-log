@@ -133,6 +133,16 @@
 
   // ---------- 啟動 ----------
 
+  // LINE、FB、IG 內建瀏覽器的登入狀態常常會被清掉，盡量改用手機的瀏覽器打開
+  const UA = navigator.userAgent || '';
+  const IN_APP = /\bLine\//i.test(UA) ? 'LINE' : /FBAN|FBAV|FB_IAB/.test(UA) ? 'Facebook' : /Instagram/.test(UA) ? 'Instagram' : '';
+  if (IN_APP === 'LINE' && !/[?&]openExternalBrowser=1/.test(location.search)) {
+    const u = new URL(location.href);
+    u.searchParams.set('openExternalBrowser', '1');
+    location.replace(u.toString());
+  }
+  const IS_STANDALONE = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
   async function boot() {
     const cfg = window.APP_CONFIG || {};
     if (!window.supabase) return renderOffline('程式沒有載入完整，可能是網路不穩或被擋住了。');
@@ -148,6 +158,8 @@
 
     const { data } = await sb.auth.getSession();
     state.session = data.session;
+    // 請瀏覽器不要自動清掉這個網站的資料（登入狀態存在這裡）
+    try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch { /* 不支援就算了 */ }
     sb.auth.onAuthStateChange((event, session) => {
       const had = !!state.session;
       state.session = session;
@@ -201,6 +213,16 @@
   // ---------- 登入 / 註冊 ----------
 
   function renderAuth(mode = 'login', msg = '') {
+    const lastUser = lsGet('lastUser', '');
+    const isIOS = /iPhone|iPad|iPod/.test(UA);
+    const tip = IN_APP
+      ? `<div class="card tip-card">⚠️ 現在是在 <b>${IN_APP}</b> 裡面打開的，這裡不會記住登入。
+          請點右上角「⋯」選 <b>用瀏覽器開啟</b>，${isIOS ? '用 Safari' : '用 Chrome'} 登入一次就好。</div>`
+      : !IS_STANDALONE && mode === 'login'
+        ? `<div class="card tip-card">💡 <b>只要登入一次的方法：</b>${isIOS
+            ? '在 Safari 點下方「分享」→「加入主畫面」'
+            : '在 Chrome 點右上角「⋮」→「加到主畫面」'}，之後都從桌面的圖示打開，就會一直記住登入。</div>`
+        : '';
     $app.innerHTML = `
       <div class="hero">
         <div class="logo">👶</div>
@@ -223,7 +245,12 @@
           <button class="btn" type="submit">${mode === 'login' ? '登入' : '建立帳號'}</button>
         </form>
         ${mode === 'signup' ? '<p class="hint">不需要信箱。請記好帳號名稱和密碼，換手機時用同一組登入</p>' : ''}
-      </div>`;
+        ${mode === 'login' ? '<p class="hint">手機問要不要「儲存密碼」時按儲存，下次就會自動填好</p>' : ''}
+      </div>
+      ${tip}`;
+    if (mode === 'login' && lastUser) {
+      $app.querySelector('[name=username]').value = lastUser;
+    }
     $app.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => renderAuth(b.dataset.mode)));
     $app.querySelector('#auth-form').addEventListener('submit', async (ev) => {
       ev.preventDefault();
@@ -238,9 +265,11 @@
         if (mode === 'login') {
           const { error } = await sb.auth.signInWithPassword({ email, password });
           if (error) throw error;
+          lsSet('lastUser', username);
         } else {
           const { data, error } = await sb.auth.signUp({ email, password, options: { data: { username } } });
           if (error) throw error;
+          lsSet('lastUser', username);
           if (!data.session) renderAuth('login', '帳號建立了，但還不能登入：請確認 Supabase 已關閉 Confirm email');
         }
       } catch (e) {
