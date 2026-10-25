@@ -575,7 +575,7 @@
       const dd = addDays(state.day, -i);
       week.push({ d: dd, ml: totals(dayRows(dd)).ml });
     }
-    const maxMl = Math.max(goal, ...week.map((w) => w.ml)) * 1.1;
+    const maxMl = Math.max(goal, ...week.map((w) => w.ml)) * 1.15;
     const weekAvg = Math.round(week.reduce((s, w) => s + w.ml, 0) / 7);
 
     $app.innerHTML = `${headerHtml()}
@@ -615,12 +615,14 @@
 
       <section class="card">
         <div class="card-title">📊 近 7 天奶量<button class="link-btn" id="month-view">📅 月份總覽 ›</button></div>
-        <div class="chart">
-          <div class="goal" style="bottom:${(goal / maxMl) * 100 * 0.72 + 14}%"><span>目標 ${goal}</span></div>
+        <div class="chart mchart">
+          <div class="goal" style="bottom:${22 + Math.round((goal / maxMl) * 120)}px"><span>目標 ${goal}</span></div>
           ${week.map((w) => `
             <div class="bar ${sameDay(w.d, new Date()) ? 'today' : ''}" data-day="${w.d.getTime()}">
-              <div class="v">${w.ml || ''}</div>
-              <div class="fill" style="height:${(w.ml / maxMl) * 72}%"></div>
+              <div class="track">
+                <div class="fill" style="height:${(w.ml / maxMl) * 100}%"></div>
+                <div class="v" style="bottom:calc(${(w.ml / maxMl) * 100}% + 3px)">${w.ml || ''}</div>
+              </div>
               <div class="d">${sameDay(w.d, new Date()) ? '今' : WEEKDAYS[w.d.getDay()]}</div>
             </div>`).join('')}
         </div>

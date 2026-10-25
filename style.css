@@ -458,3 +458,12 @@ input.input::-webkit-datetime-edit { padding: 0; }
 .rhythm .rb.bottle_breast { fill: var(--pink-deep); }
 .rhythm .vl { font-size: 9.5px; fill: var(--ink); font-weight: 700; font-family: inherit; }
 .tip-card { font-size: 14px; line-height: 1.7; background: #FFF8E1; }
+/* 喝奶 7 天圖：長條和目標線用同一個 120px 高的區域計算 */
+.mchart { height: auto; padding-top: 22px; }
+.mchart .bar { height: auto; }
+.mchart .track { position: relative; width: 100%; max-width: 34px; height: 120px; }
+.mchart .track .fill { position: absolute; left: 0; right: 0; bottom: 0; max-width: none; }
+.mchart .track .v { position: absolute; left: -10px; right: -10px; text-align: center; z-index: 1; }
+.mchart .d { height: 18px; line-height: 18px; }
+.mchart .goal span { top: auto; bottom: 2px; }
+.mchart .goal span { right: auto; left: 0; }
